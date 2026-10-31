@@ -1,0 +1,17 @@
+# Your own data - never commit it (call history holds customer details)
+data/
+/call-history*.json
+/call-helpers*.json
+/live-captions.ini
+/copilot-targets.ini
+*.log
+
+# Release output (tools/release.ahk)
+dist/
+
+# Output of the dev/probe tools
+tools/dev/*.txt
+
+# Speech engine for mic captions - large, and not shipped for now
+whisper/
+app/whisper/

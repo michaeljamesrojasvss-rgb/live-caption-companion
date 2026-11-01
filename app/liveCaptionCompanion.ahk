@@ -43,6 +43,7 @@ MAX_HISTORY_BYTES := 50 * 1024 * 1024
 history := ""              ; Map: the whole call-history document
 currentCall := ""          ; Map: the session being recorded
 historyAvailable := true
+historyLoadError := ""     ; why the history file could not be loaded (shown in dialogs)
 historyGui := ""
 chatView := true
 fontSize := 10
@@ -651,7 +652,7 @@ ValidateHistory(doc) {
 }
 
 LoadHistory() {
-    global history, historyAvailable
+    global history, historyAvailable, historyLoadError
 
     if !FileExist(HISTORY_PATH) {
         history := NewHistoryDoc()
@@ -666,6 +667,7 @@ LoadHistory() {
     } catch as err {
         ; Same safety rule as the C# app: never overwrite a file we could not read.
         historyAvailable := false
+        historyLoadError := err.Message
         history := NewHistoryDoc()
         statusText.Text := "Status: call history could not be loaded; new calls will not be saved: " err.Message
         return

@@ -161,7 +161,7 @@ ShowHistoryWindow(*) {
             return
         }
         if !historyAvailable {
-            hStatus.Text := "Call history couldn't be loaded, so nothing can be deleted right now"
+            hStatus.Text := "Call history couldn't be loaded (" historyLoadError "), so nothing can be deleted right now"
             return
         }
         doomed := [], skippedLive := false

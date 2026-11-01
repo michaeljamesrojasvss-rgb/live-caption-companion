@@ -38,7 +38,8 @@ MergeImportStart(*) {
         return
     }
     if !historyAvailable {
-        MsgBox("Your call history couldn't be loaded, so nothing can be merged into it right now.", "Import & merge", "Icon!")
+        MsgBox("Your call history couldn't be loaded, so nothing can be merged into it right now."
+            . "`n`nReason: " historyLoadError "`n`nFile: " HISTORY_PATH, "Import & merge", "Icon!")
         return
     }
     try {

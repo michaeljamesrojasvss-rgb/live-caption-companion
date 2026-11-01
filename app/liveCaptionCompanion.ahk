@@ -1004,9 +1004,36 @@ ToggleHelpers(*) {
     helpersVisible := !helpersVisible
     btnHelp.Text := helpersVisible ? "Helpers ▲" : "Helpers ▼"
     EnsureHelperPanel()
-    ShowHideHelperControls(helpersVisible)
+    WithRedrawPaused(ApplyHelperPanel)
+}
+
+; Shows or hides the panel and re-lays out the window. Opening lays out FIRST and
+; shows after, so the controls never appear at their starting / old positions.
+ApplyHelperPanel() {
     myGui.GetClientPos(, , &w, &h)
-    GuiResize(myGui, 0, w, h)
+    if helpersVisible {
+        GuiResize(myGui, 0, w, h)
+        ShowHideHelperControls(true)
+    } else {
+        ShowHideHelperControls(false)
+        GuiResize(myGui, 0, w, h)
+    }
+}
+
+; Runs fn() with painting paused, then does ONE full repaint of the window and
+; every control. Showing, moving and resizing dozens of controls one at a time
+; otherwise leaves half-drawn ghosts (a text box's scrollbar over a button, ...)
+; until something else forces a repaint.
+WithRedrawPaused(fn) {
+    hwnd := myGui.Hwnd
+    SendMessage(0x000B, 0, 0, hwnd)                       ; WM_SETREDRAW off
+    try {
+        fn()
+    } finally {
+        SendMessage(0x000B, 1, 0, hwnd)                   ; WM_SETREDRAW on
+        ; INVALIDATE | ERASE | ALLCHILDREN | UPDATENOW
+        DllCall("RedrawWindow", "Ptr", hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x185)
+    }
 }
 
 ShowHideHelperControls(vis) {
@@ -1024,6 +1051,13 @@ ShowHideHelperControls(vis) {
 }
 
 RebuildHelperButtons(info := "") {
+    if helpersVisible
+        WithRedrawPaused(() => RebuildHelperButtonsCore(info))
+    else
+        RebuildHelperButtonsCore(info)
+}
+
+RebuildHelperButtonsCore(info := "") {
     global helperButtons, helperMiniButtons
 
     EnsureHelperPanel()

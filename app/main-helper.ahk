@@ -2,6 +2,7 @@
 #SingleInstance Force
 #Include %A_ScriptDir%\salesforce.ahk
 #Include %A_ScriptDir%\copy-indicator.ahk     ; Ctrl+C/X/V badge, Ctrl+Shift+Alt+I on/off
+#Include %A_ScriptDir%\vdesk.ahk              ; wheel over the taskbar = switch virtual desktops, Ctrl+Shift+Alt+D on/off
 
 ; ==============================================================================
 ; main-helper.ahk  -  extra hotkeys, OFF by default

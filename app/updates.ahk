@@ -61,7 +61,7 @@ UpdLayout(width, height) {
             updPill.Move(px, sy - 2, UPD_PILL_W, 24)
             statusText.Move(, , Max(80, px - sx - 8))
         } else {
-            statusText.Move(, , updStatusW)
+            statusText.Move(, , Max(80, width - 10 - sx))
         }
     }
 }

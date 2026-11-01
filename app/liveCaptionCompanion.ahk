@@ -92,8 +92,11 @@ micDataDir := A_Temp "\live-captions-companion"
 micOutFile := micDataDir "\captions.txt"
 micLogFile := micDataDir "\engine.log"
 MIC_INI := DATA_DIR "\live-captions.ini"
-WINDOW_MIN_W := 600          ; keep in sync with +MinSize600x480
+WINDOW_MIN_W := 420          ; keep in sync with +MinSize420x480 (the top button row needs ~410)
 WINDOW_MIN_H := 480
+BOTTOM_WRAP_W := 570         ; below this client width the bottom buttons wrap onto two rows
+BOTTOM_BAND_1 := 80          ; bottom band height: debug line + one row of buttons
+BOTTOM_BAND_2 := 114         ; ... and with two rows of buttons
 
 ; Look for whisper-stream (needed only when mic captions are enabled)
 micStreamExe := ""
@@ -147,7 +150,7 @@ MicDeviceLabel(index) {
 ; ==============================================================================
 ; GUI
 ; ==============================================================================
-myGui := Gui("+Resize +MinSize600x480", "Live Caption Companion")
+myGui := Gui("+Resize +MinSize420x480", "Live Caption Companion")
 myGui.BackColor := "11151D"
 myGui.SetFont("s10 cF1F5FB", "Segoe UI")
 pinned := false
@@ -363,7 +366,7 @@ JoinWith(arr, sep) {
     return s
 }
 
-; Opens the window at its minimum width (600, from +MinSize600x480) and the full
+; Opens the window at its minimum width (WINDOW_MIN_W) and the full
 ; working height of the screen it opens on (the area above the taskbar).
 ShowAtMinWidthMaxHeight() {
     if RestoreWindowPos()                         ; reopen where it was last time
@@ -1087,7 +1090,8 @@ LayoutHelperPanel(width, height) {
 
     margin  := 10
     ; Panel occupies the HELPER_H band directly above the debug/button row (80px)
-    panelY  := height - 80 - HELPER_H
+    bandH   := BottomBandH(width)
+    panelY  := height - bandH - HELPER_H
     y       := panelY
 
     hStatusLine.Move(margin, y, width - 2 * margin)
@@ -1122,7 +1126,7 @@ LayoutHelperPanel(width, height) {
     y += 22
 
     ; Action buttons sit 38 px above the bottom of the panel
-    by := height - 80 - 38
+    by := height - bandH - 38
     previewH := Max(30, by - y - 4)
     hPreview.Move(margin, y, width - 2 * margin, previewH)
 
@@ -2099,7 +2103,8 @@ GuiResize(thisGui, minMax, width, height) {
     current.Move(, , width - 20)
     panelSpace := helpersVisible ? HELPER_H : 0
 	callerH := CallerStripHeight()
-    newH := Max(60, height - viewTop - 80 - panelSpace - notesH - bannerH - callerH)
+    bandH := BottomBandH(width)
+    newH := Max(60, height - viewTop - bandH - panelSpace - notesH - bannerH - callerH)
     viewY := viewTop + bannerH + callerH
     CallerLayout(viewLeft, viewTop + bannerH, width - 20)
     if (bannerH) {
@@ -2112,15 +2117,36 @@ GuiResize(thisGui, minMax, width, height) {
     notesLabel.Move(viewLeft, notesTop, width - 20)
     notesBox.Move(viewLeft, notesTop + 22, width - 20, notesH - 34)
 	NotesSplitterLayout(viewLeft, viewY + newH, width - 20)
-    debugText.Move(, height - 70, width - 20)
-    btnNew.Move(, height - 40)
-    btnDiscard.Move(, height - 40)
-    btnHist.Move(, height - 40)
-    btnHelp.Move(, height - 40)
-    btnCopy.Move(, height - 40)
+    BottomRowLayout(width, height)
     UpdLayout(width, height)
     if (helpersVisible)
         LayoutHelperPanel(width, height)
+}
+
+; Height of the bottom band (debug line + buttons). Narrow windows wrap the
+; buttons onto a second row instead of letting them run off the edge.
+BottomBandH(width) {
+    return width < BOTTOM_WRAP_W ? BOTTOM_BAND_2 : BOTTOM_BAND_1
+}
+
+; Places the debug line and the New / Discard / History / Helpers / Copy buttons
+BottomRowLayout(width, height) {
+    if (width < BOTTOM_WRAP_W) {
+        debugText.Move(, height - BOTTOM_BAND_2 + 10, width - 20)
+        PlaceButtonRow([btnNew, btnDiscard, btnHist], viewLeft, height - 74)
+        PlaceButtonRow([btnHelp, btnCopy], viewLeft, height - 40)
+    } else {
+        debugText.Move(, height - BOTTOM_BAND_1 + 10, width - 20)
+        PlaceButtonRow([btnNew, btnDiscard, btnHist, btnHelp, btnCopy], viewLeft, height - 40)
+    }
+}
+
+PlaceButtonRow(buttons, x, y) {
+    for b in buttons {
+        b.GetPos(, , &bw)
+        b.Move(x, y)
+        x += bw + 8
+    }
 }
 
 RelayoutMain() {

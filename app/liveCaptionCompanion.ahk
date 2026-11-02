@@ -660,17 +660,13 @@ LoadHistory() {
     }
 
     try {
-        if (FileGetSize(HISTORY_PATH) > MAX_HISTORY_BYTES)
-            throw Error("Call history file exceeds the 50 MB safety limit.")
-        history := Json.Parse(FileRead(HISTORY_PATH, "UTF-8"))
-        ValidateHistory(history)
+        history := ReadHistoryFile(HISTORY_PATH)
     } catch as err {
-        ; Same safety rule as the C# app: never overwrite a file we could not read.
-        historyAvailable := false
-        historyLoadError := err.Message
-        history := NewHistoryDoc()
-        statusText.Text := "Status: call history could not be loaded; new calls will not be saved: " err.Message
-        return
+        ; The file is never overwritten: it is set aside under a new name, then the
+        ; newest safety copy that still reads is put in its place.
+        history := RestoreBrokenHistory(err.Message)
+        if !historyAvailable
+            return
     }
 
     recovered := false
@@ -689,6 +685,91 @@ LoadHistory() {
     }
     if recovered
         SaveHistory()
+    KeepGoodCopy()
+}
+
+; Reads and checks one history file. Throws when it can't be used.
+ReadHistoryFile(path) {
+    if (FileGetSize(path) > MAX_HISTORY_BYTES)
+        throw Error("Call history file exceeds the 50 MB safety limit.")
+    doc := Json.Parse(FileRead(path, "UTF-8"))
+    ValidateHistory(doc)
+    return doc
+}
+
+; The history file could not be read (for example Windows left it filled with empty
+; bytes after a crash or power cut). It is renamed to call-history.broken-<time>.json
+; so nothing is lost, then the newest safety copy that reads is restored. With no usable
+; copy the app starts a fresh history, so new calls are still saved.
+; Returns the history document to use.
+RestoreBrokenHistory(reason) {
+    global historyAvailable, historyLoadError
+    broken := HISTORY_DIR "\call-history.broken-" FormatTime(, "yyyyMMdd-HHmmss") ".json"
+    try {
+        FileMove(HISTORY_PATH, broken, true)
+    } catch {
+        ; Can't set it aside, so leave it exactly as it is and don't save over it.
+        historyAvailable := false
+        historyLoadError := reason
+        statusText.Text := "Status: call history could not be loaded; new calls will not be saved: " reason
+        return NewHistoryDoc()
+    }
+    for name in ["call-history.good.json", "call-history.good-prev.json", "call-history.backup.json"] {
+        src := HISTORY_DIR "\" name
+        if !FileExist(src)
+            continue
+        try {
+            doc := ReadHistoryFile(src)
+            FileCopy(src, HISTORY_PATH, true)
+            statusText.Text := "Status: call history was damaged; restored from " name
+            MsgBox("Your call history file was damaged and couldn't be read:`n" reason
+                . "`n`nIt was restored from the safety copy " name " (calls made after that copy may be missing)."
+                . "`n`nThe damaged file was kept as:`n" broken, "Call history restored", "Icon! T60")
+            return doc
+        }
+    }
+    statusText.Text := "Status: call history was damaged and no safety copy was found; started a new history"
+    MsgBox("Your call history file was damaged and couldn't be read:`n" reason
+        . "`n`nNo safety copy was found, so a new empty history was started and new calls are saved again."
+        . "`n`nThe damaged file was kept as:`n" broken, "Call history damaged", "Icon! T60")
+    return NewHistoryDoc()
+}
+
+; After the history has just been read (or saved) fine, keep a copy of it, and the copy
+; before that one, so a damaged file can be replaced by a recent good one.
+KeepGoodCopy() {
+    if !historyAvailable
+        return
+    try {
+        if (!FileExist(HISTORY_PATH) || FileGetSize(HISTORY_PATH) < 10)
+            return
+        good := HISTORY_DIR "\call-history.good.json"
+        if FileExist(good)
+            FileCopy(good, HISTORY_DIR "\call-history.good-prev.json", true)
+        FileCopy(HISTORY_PATH, good, true)
+    }
+}
+
+; Writes text to a temp file, forces it onto the disk, then swaps it over the real file.
+; Without forcing it to disk, a crash or power cut right after a save can leave a file of
+; the right size that is filled with empty bytes (Windows hadn't written the data yet).
+WriteFileDurably(tmp, path, text) {
+    try {
+        f := FileOpen(tmp, "w", "UTF-8-RAW")
+        f.Write(text)
+        f.Close()
+        if (FileGetSize(tmp) != StrPut(text, "UTF-8") - 1)
+            throw Error("The new copy came out the wrong size, so it was not used.")
+        g := FileOpen(tmp, "rw")
+        DllCall("kernel32\FlushFileBuffers", "Ptr", g.Handle)
+        g.Close()
+        ; MOVEFILE_REPLACE_EXISTING (1) + MOVEFILE_WRITE_THROUGH (8)
+        if !DllCall("kernel32\MoveFileExW", "Str", tmp, "Str", path, "UInt", 9)
+            throw OSError(A_LastError)
+    } catch as err {
+        try FileDelete(tmp)
+        throw err
+    }
 }
 
 SaveHistory() {
@@ -697,11 +778,7 @@ SaveHistory() {
     try {
         jsonText := Json.Stringify(history)
         DirCreate(HISTORY_DIR)
-        tmp := HISTORY_DIR "\.call-history." A_TickCount ".tmp"
-        f := FileOpen(tmp, "w", "UTF-8-RAW")
-        f.Write(jsonText)
-        f.Close()
-        FileMove(tmp, HISTORY_PATH, true)
+        WriteFileDurably(HISTORY_DIR "\.call-history." A_TickCount ".tmp", HISTORY_PATH, jsonText)
     } catch as err {
         statusText.Text := "Status: call is active, but the latest changes could not be saved: " err.Message
     }
@@ -754,6 +831,7 @@ FinishCurrentCall() {
     } else {
         currentCall["endedAtUtc"] := NowIso()
         PersistCurrentCall()
+        KeepGoodCopy()
     }
     currentCall := ""
 }
@@ -1544,16 +1622,7 @@ OpenHelperJson(*) {
 WriteTextAtomically(path, text) {
     SplitPath(path, , &dir)
     DirCreate(dir)
-    tmp := dir "\.helpers." A_TickCount ".tmp"
-    f := FileOpen(tmp, "w", "UTF-8-RAW")
-    f.Write(text)
-    f.Close()
-    try {
-        FileMove(tmp, path, true)
-    } catch as err {
-        try FileDelete(tmp)
-        throw err
-    }
+    WriteFileDurably(dir "\.helpers." A_TickCount ".tmp", path, text)
 }
 
 ; Reads a plain helper configuration or a backup bundle. Returns

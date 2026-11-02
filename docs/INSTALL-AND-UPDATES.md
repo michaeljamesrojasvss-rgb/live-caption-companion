@@ -29,7 +29,21 @@ A repo copy never updates itself (no `install.ini`), but *Check for updates* wor
 2. Upload `dist\version.json` to your Drive folder, share it as **Anyone with the link**, copy the link.
 3. Paste it into **Update link** in the release tool. (It's saved into `app\app.ini` when you build.)
 
-## Every release
+## Every release (automatic)
+
+Push to `main`. If the push changes `app/`, `installer/`, `runtime/` or `tools/release.ahk`, GitHub Actions
+(`.github/workflows/release.yml`) builds the zip and publishes a GitHub Release named like `2026.11.02.0725`
+(date and time in Manila). Installed copies check
+`https://github.com/michaeljamesrojasvss-rgb/live-caption-companion/releases/latest/download/version.json`
+and show the blue **Update** button; nobody is updated until they click it.
+
+- "What's new" comes from commit messages: every line starting with `Release-note:` is used (write them for
+  workmates, in plain language). With none, the commit subjects are used.
+- New coworkers get `.../releases/latest/download/CaptionCompanion.zip` (always the newest).
+- Re-run a failed release from the repo's **Actions** tab > Release > Run workflow.
+- `app\version.txt` in the repo is no longer updated; the build writes the real version into the zip only.
+
+## Every release, by hand (old way, Drive)
 
 1. `tools\release.ahk`: check the version (defaults to today, e.g. `2026.10.28`, or `.2` for a second one the same day), write *What's new*, **Build zip**.
 2. Upload `dist\CaptionCompanion-<version>.zip` to Drive, share it as **Anyone with the link**, paste its link, **Make version.json**.

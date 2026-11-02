@@ -1,0 +1,76 @@
+# Every push to main that changes the app is built and published as a GitHub Release.
+# Installed copies look at .../releases/latest/download/version.json and offer the Update button.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'installer/**'
+      - 'runtime/**'
+      - 'tools/release.ahk'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# one release at a time, so "latest" always ends up being the newest push
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest        # a standard runner: free for public repositories
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0           # needs the tags, to list what changed since the last release
+
+      - name: Build the zip and version.json
+        shell: pwsh
+        env:
+          RELEASE_CI: '1'
+        run: |
+          # Version = date and time in Manila, e.g. 2026.11.02.0725 (always grows, never needs committing)
+          $tz  = [TimeZoneInfo]::FindSystemTimeZoneById('Singapore Standard Time')   # UTC+8, same as Manila
+          $now = [TimeZoneInfo]::ConvertTimeFromUtc([DateTime]::UtcNow, $tz)
+          $ver = $now.ToString('yyyy.MM.dd.HHmm')
+          "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          # What's new: "Release-note:" lines from the commit messages since the last release,
+          # otherwise the commit subjects.
+          $prev = (git describe --tags --abbrev=0 --match 'v*' 2>$null)
+          if ($LASTEXITCODE -ne 0) { $prev = $null }
+          if ($prev) { $range = @("$prev..HEAD") } else { $range = @('-n', '1') }
+          $notes = @(git log @range --format=%B | Where-Object { $_ -match '^\s*Release-note:\s*\S' } |
+                     ForEach-Object { '- ' + ($_ -replace '^\s*Release-note:\s*', '') })
+          if ($notes.Count -eq 0) {
+            $notes = @(git log @range --no-merges --format=%s | Select-Object -First 8 | ForEach-Object { "- $_" })
+          }
+          if ($notes.Count -eq 0) { $notes = @('- Small fixes') }
+          Set-Content -Path dist\notes.txt -Value $notes -Encoding utf8
+
+          $env:RELEASE_ZIP_URL = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/v$ver/CaptionCompanion-$ver.zip"
+          $p = Start-Process -FilePath "$PWD\runtime\AutoHotkey32.exe" `
+                 -ArgumentList '/ErrorStdOut', 'tools\release.ahk', 'build', $ver, "@$PWD\dist\notes.txt" `
+                 -Wait -PassThru -NoNewWindow
+          if (Test-Path dist\release-result.txt) { Get-Content dist\release-result.txt }
+          if ($p.ExitCode -ne 0) { throw "release.ahk failed (exit code $($p.ExitCode))" }
+
+          # Same zip under a fixed name, for the "new coworker" link
+          Copy-Item "dist\CaptionCompanion-$ver.zip" dist\CaptionCompanion.zip
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$env:VERSION" `
+            "dist\CaptionCompanion-$env:VERSION.zip" dist\CaptionCompanion.zip dist\version.json `
+            --title "$env:VERSION" --notes-file dist\notes.txt --target "$env:GITHUB_SHA"

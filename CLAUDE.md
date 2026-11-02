@@ -29,7 +29,13 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   - A string in single quotes can't contain a single quote (and double-quoted strings need `` `" ``).
   - Put fat-arrow assignments in parentheses: `() => (x := 1)`.
 
-## Making a release (when asked to "make a release" / "build a new version")
+## Releases
+Releases are automatic: every push to `main` that changes `app\`, `installer\`, `runtime\` or
+`tools\release.ahk` is built and published by GitHub Actions (`.github\workflows\release.yml`). Put a line
+`Release-note: <what changed, for workmates, plain language>` in the commit message for the "What's new" text.
+Nothing to build or upload by hand.
+
+## Making a release by hand (only if Actions is down; "make a release" / "build a new version")
 1. Make sure the changes are done and committed.
 2. Run (from the repo root, on Windows):
    ```

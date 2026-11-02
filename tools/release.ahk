@@ -23,9 +23,13 @@
 ; and the link you give workmates never change.
 ;
 ; Links live in:
-;   app\app.ini       [Update]  ManifestUrl = Drive link of version.json (shipped)
-;   tools\release.ini [Release] ZipUrl      = Drive link of the zip
-; Building also writes app\version.txt - commit it.
+;   app\app.ini       [Update]  ManifestUrl = link of version.json (shipped)
+;   tools\release.ini [Release] ZipUrl      = link of the zip (only for releases built by hand)
+; Building also writes app\version.txt - commit it (not needed for GitHub releases).
+;
+; Normally you don't run this at all: every push to main that changes the app is built
+; and published by GitHub Actions (.github\workflows\release.yml), which calls the
+; command line below with RELEASE_CI=1. "notes" can also be "@path" to read a file.
 ; ==============================================================================
 
 SplitPath(A_ScriptDir, , &REPO)
@@ -142,25 +146,39 @@ ReleaseZipLink() => IniRead(RELEASE_INI, "Release", "ZipUrl", "")
 ; ==============================================================================
 ReleaseCli() {
     try {
+        ; GitHub Actions sets RELEASE_CI=1 and RELEASE_ZIP_URL, and picks the version itself
+        ; (see .github\workflows\release.yml). On your own PC neither is set.
+        ci := (EnvGet("RELEASE_CI") = "1")
         current := PkgReadVersion(APP)
         ver := (A_Args.Length >= 2 && A_Args[2] != "auto") ? Trim(A_Args[2]) : ReleaseSuggestVersion(current)
-        notes := (A_Args.Length >= 3) ? StrReplace(A_Args[3], "\n", "`n") : ""
-        if (PkgCompareVersions(ver, current) <= 0)
+        notes := ""
+        if (A_Args.Length >= 3) {
+            if (SubStr(A_Args[3], 1, 1) = "@") {            ; "@path" = read the notes from a file
+                notes := Trim(FileRead(SubStr(A_Args[3], 2), "UTF-8"), " `t`r`n")
+            } else {
+                notes := StrReplace(A_Args[3], "\n", "`n")
+            }
+        }
+        if (!ci && PkgCompareVersions(ver, current) <= 0)
             throw Error(ver " isn't newer than the current version " current ", so installed copies wouldn't be offered it")
         if (ReleaseManifestLink() = "")
             throw Error("no update link in app\app.ini [Update] ManifestUrl")
-        zipLink := ReleaseZipLink()
+        zipLink := EnvGet("RELEASE_ZIP_URL")
+        if (zipLink = "")
+            zipLink := ReleaseZipLink()
         if (zipLink = "")
             throw Error("no zip link in tools\release.ini [Release] ZipUrl")
 
         r := ReleaseBuildZip(ver, false)
         json := ReleaseWriteVersionJson(ver, zipLink, notes)
-        ReleaseOut("OK: built version " ver " (" r.files " app files)`n"
+        msg := "OK: built version " ver " (" r.files " app files)`n"
             . "  zip:          " r.zip "`n"
-            . "  version.json: " json "`n"
-            . "Next: on Google Drive, upload the zip as a new version of the existing zip file,`n"
-            . "then version.json as a new version of the existing version.json (Manage versions).`n"
-            . "Commit app\version.txt.")
+            . "  version.json: " json
+        if !ci {
+            msg .= "`nNext: upload the zip and version.json where the update link points (see docs\INSTALL-AND-UPDATES.md)."
+                . "`nCommit app\version.txt."
+        }
+        ReleaseOut(msg)
         return 0
     } catch as err {
         ReleaseOut("FAILED: " err.Message)

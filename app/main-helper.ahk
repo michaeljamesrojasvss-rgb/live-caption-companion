@@ -120,12 +120,18 @@ OpenServiceChannel() {
 ; 0 = right, 90 = down, 180 = left, 270 = up, and the function to run), and a
 ; function that does the work (see OpenSalesforce above). Keep it to ~6 or fewer.
 ; ==============================================================================
-^+!z:: WheelRun()
+^+!z:: {
+    try WheelRun()
+    catch as e {
+        Tip("Wheel error: " e.Message " (line " e.Line ")")
+        MsgBox("Wheel error: " e.Message "`n`nLine " e.Line "`n" e.What, "main-helper")
+    }
+}
 
 WheelBuild() {
     global wheelGui, wheelBtns
     size := 2 * (WHEEL_RADIUS + WHEEL_BTN_W // 2)
-    g := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x08000000 -DPIScale")   ; E0x08000000 = never steal focus
+    g := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x08000000 +E0x80000 -DPIScale")   ; E0x08000000 = never steal focus, E0x80000 = see-through colour allowed
     g.BackColor := WHEEL_KEY_BG
     g.MarginX := 0, g.MarginY := 0
     g.SetFont("s10 bold", "Segoe UI")
@@ -149,8 +155,9 @@ WheelBuild() {
     rgn := DllCall("CreateEllipticRgn", "Int", 0, "Int", 0, "Int", d + 1, "Int", d + 1, "Ptr")
     DllCall("SetWindowRgn", "Ptr", dot.Hwnd, "Ptr", rgn, "Int", true)
 
+    ; make WHEEL_KEY_BG fully see-through (COLORREF is BGR, so 010203 -> 0x030201)
+    DllCall("SetLayeredWindowAttributes", "Ptr", g.Hwnd, "UInt", 0x030201, "UChar", 0, "UInt", 1)
     g.Show(Format("Hide NA w{} h{}", size, size))
-    WinSetTransColor(WHEEL_KEY_BG, "ahk_id " g.Hwnd)
     wheelGui := g
     wheelBtns := btns
 }

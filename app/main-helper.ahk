@@ -28,6 +28,7 @@ MH_CheckCompanion() {
 }
 
 ; Radial wheel settings (the wheel itself is further down, Ctrl+Shift+Alt+Z)
+WHEEL_DEBUG := true         ; true = log each step to %TEMP%\wheel-debug.log and show a small tip top-left; set false once it works
 WHEEL_AUTO_COPY := true     ; true = press Ctrl+C for you; false = use the clipboard as-is
 
 WHEEL_OPTIONS := [
@@ -43,7 +44,6 @@ WHEEL_DEAD   := Round(28 * WHEEL_SCALE)      ; "cancel" zone in the middle
 WHEEL_PI     := 4 * ATan(1)
 WHEEL_BASE_BG  := "2B2B2B"
 WHEEL_HOVER_BG := "0078D4"
-WHEEL_KEY_BG   := "010203"                   ; becomes see-through
 
 wheelGui := ""
 wheelBtns := []
@@ -121,21 +121,34 @@ OpenServiceChannel() {
 ; function that does the work (see OpenSalesforce above). Keep it to ~6 or fewer.
 ; ==============================================================================
 ^+!z:: {
+    WheelDbg("hotkey fired")
     try WheelRun()
     catch as e {
-        Tip("Wheel error: " e.Message " (line " e.Line ")")
+        WheelDbg("ERROR: " e.Message " (line " e.Line ", " e.What ")")
         MsgBox("Wheel error: " e.Message "`n`nLine " e.Line "`n" e.What, "main-helper")
     }
+}
+
+; Debug trail: a line in %TEMP%\wheel-debug.log plus a short tip in the top-left corner
+WheelDbg(msg) {
+    if !WHEEL_DEBUG
+        return
+    try FileAppend(FormatTime(, "HH:mm:ss") " " msg "`n", A_Temp "\wheel-debug.log")
+    ToolTip("Wheel: " msg, 10, 10, 2)
+    SetTimer(() => ToolTip(, , , 2), -3000)
 }
 
 WheelBuild() {
     global wheelGui, wheelBtns
     size := 2 * (WHEEL_RADIUS + WHEEL_BTN_W // 2)
-    g := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x08000000 +E0x80000 -DPIScale")   ; E0x08000000 = never steal focus, E0x80000 = see-through colour allowed
-    g.BackColor := WHEEL_KEY_BG
+    g := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x08000000 -DPIScale")   ; E0x08000000 = never steal focus
+    g.BackColor := WHEEL_BASE_BG
     g.MarginX := 0, g.MarginY := 0
     g.SetFont("s10 bold", "Segoe UI")
 
+    ; The window is clipped to the shapes below (pills + a dot in the middle), so
+    ; no see-through colour is needed: everything outside the shapes simply isn't there.
+    shape := 0
     btns := []
     for opt in WHEEL_OPTIONS {
         a := opt["angle"] * WHEEL_PI / 180
@@ -143,23 +156,29 @@ WheelBuild() {
         by := size // 2 + Round(Sin(a) * WHEEL_RADIUS) - WHEEL_BTN_H // 2
         c := g.Add("Text", Format("x{} y{} w{} h{} Center +0x200 Background{}", bx, by, WHEEL_BTN_W, WHEEL_BTN_H, WHEEL_BASE_BG), opt["name"])
         c.SetFont("cD0D0D0")
-        rgn := DllCall("CreateRoundRectRgn", "Int", 0, "Int", 0, "Int", WHEEL_BTN_W + 1, "Int", WHEEL_BTN_H + 1
-            , "Int", WHEEL_BTN_H, "Int", WHEEL_BTN_H, "Ptr")
-        DllCall("SetWindowRgn", "Ptr", c.Hwnd, "Ptr", rgn, "Int", true)
         btns.Push(c)
+        r := DllCall("CreateRoundRectRgn", "Int", bx, "Int", by, "Int", bx + WHEEL_BTN_W + 1, "Int", by + WHEEL_BTN_H + 1
+            , "Int", WHEEL_BTN_H, "Int", WHEEL_BTN_H, "Ptr")
+        shape := WheelJoinRegion(shape, r)
     }
-
-    ; little dot in the middle = the cancel zone
     d := Round(26 * WHEEL_SCALE)
-    dot := g.Add("Text", Format("x{} y{} w{} h{} Background{}", size // 2 - d // 2, size // 2 - d // 2, d, d, WHEEL_BASE_BG))
-    rgn := DllCall("CreateEllipticRgn", "Int", 0, "Int", 0, "Int", d + 1, "Int", d + 1, "Ptr")
-    DllCall("SetWindowRgn", "Ptr", dot.Hwnd, "Ptr", rgn, "Int", true)
+    r := DllCall("CreateEllipticRgn", "Int", size // 2 - d // 2, "Int", size // 2 - d // 2
+        , "Int", size // 2 + d // 2 + 1, "Int", size // 2 + d // 2 + 1, "Ptr")
+    shape := WheelJoinRegion(shape, r)
 
-    ; make WHEEL_KEY_BG fully see-through (COLORREF is BGR, so 010203 -> 0x030201)
-    DllCall("SetLayeredWindowAttributes", "Ptr", g.Hwnd, "UInt", 0x030201, "UChar", 0, "UInt", 1)
     g.Show(Format("Hide NA w{} h{}", size, size))
+    DllCall("SetWindowRgn", "Ptr", g.Hwnd, "Ptr", shape, "Int", true)   ; the window now owns the region
     wheelGui := g
     wheelBtns := btns
+    WheelDbg("wheel built (" size " px)")
+}
+
+WheelJoinRegion(a, b) {
+    if !a
+        return b
+    DllCall("CombineRgn", "Ptr", a, "Ptr", a, "Ptr", b, "Int", 2)      ; 2 = RGN_OR
+    DllCall("DeleteObject", "Ptr", b)
+    return a
 }
 
 WheelRun() {
@@ -185,6 +204,7 @@ WheelRun() {
             MouseMove(cx, cy, 0)          ; centre the mouse in the wheel so the middle stays "cancel"
 
         wheelGui.Show(Format("NA x{} y{}", wx, wy))
+        WheelDbg("shown at " wx "," wy " size " w "x" h)
 
         hover := 0
         while GetKeyState("z", "P") {
@@ -206,6 +226,7 @@ WheelRun() {
             Sleep(15)
         }
         chosen := hover
+        WheelDbg("released, option " chosen)
     } finally {
         try wheelGui.Hide()
         wheelActive := false

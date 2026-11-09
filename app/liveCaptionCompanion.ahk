@@ -6,6 +6,7 @@
 #Include Json.ahk
 #Include salesforce.ahk
 #Include caller-companion.ahk
+#Include livecaption-tools.ahk
 #Include copilot-assist.ahk
 #Include history-window.ahk
 #Include notes-resize.ahk
@@ -249,6 +250,7 @@ StartNewCallRecord()
 SetTimer(ReadCaption, 200)
 SetTimer(TrackSelection, 250)
 CallerInit()
+LctInit()
 AssistInit()
 NotesResizeInit()
 UpdInit()

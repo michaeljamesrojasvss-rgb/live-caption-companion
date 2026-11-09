@@ -6,7 +6,7 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
 
 ## Layout
 - `app\` - everything that ships. Entry point `liveCaptionCompanion.ahk`; each feature is its own
-  module with its own prefix (`Caller*`, `Assist*`, `Upd*`, `Merge*`, `Pkg*`, `SF_*`).
+  module with its own prefix (`Caller*`, `Assist*`, `Upd*`, `Merge*`, `Pkg*`, `SF_*`, `Lct*` = Windows Live Captions restart/test tools).
   `app-paths.ahk` must stay the first `#Include` (sets `DATA_DIR`, `APP_VERSION`).
 - `data\` - the user's history, helpers, settings, logs. Git-ignored. Never ship it, never write app files there.
 - `installer\` - `Setup.bat` + `setup.ahk`. `tools\release.ahk` - builds releases.

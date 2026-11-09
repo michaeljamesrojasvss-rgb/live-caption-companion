@@ -5,7 +5,7 @@
 ;   * Restart Windows Live Captions  - for when it stops captioning. Ends every
 ;     LiveCaptions.exe (repeating until it is really gone, like ending the task
 ;     twice by hand), starts it again and lets the Companion reconnect to it.
-;   * Test Windows Live Captions     - speaks a sample call with the built-in
+;   * Test Windows Live Captions     - speaks a short test phrase with the built-in
 ;     Windows voice (SAPI), so there is no recording to play. Live Captions
 ;     listens to the PC's sound output, so the words should show up as captions.
 ;     When the speech ends it tells you whether captions came through.
@@ -21,9 +21,7 @@
 
 LCT_LOG := DATA_DIR "\livecaption-tools.log"
 LCT_EXE := "LiveCaptions.exe"
-LCT_DEFAULT_TEXT := "Hello, thank you for calling support. My name is Maria Santos. "
-    . "My work order number is 4 5 6 7 8 9, and the store number is 1 2 3. "
-    . "Can you please send a technician today? Thank you."
+LCT_DEFAULT_TEXT := "Testing the windows live caption"
 
 lctVoice := ""            ; kept alive while speaking - releasing it cuts the speech off
 lctTestStartChanges := 0  ; changeCount when the test started

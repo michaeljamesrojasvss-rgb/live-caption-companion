@@ -44,6 +44,8 @@ class Json {
     }
 
     static _Esc(s) {
+        if !RegExMatch(s, '[\\"\x01-\x1F]')              ; nothing to escape (most strings): skip the 31 passes below
+            return s
         s := StrReplace(s, "\", "\\")
         s := StrReplace(s, '"', '\"')
         s := StrReplace(s, "`n", "\n")

@@ -672,6 +672,12 @@ LoadHistory() {
     }
 
     recovered := false
+    if (HistoryStripPrompts(history) > 0) {
+        ; Older history kept the full text of every prepared prompt (most of the file).
+        ; Keep one safety copy of the file as it was, then save it without them.
+        try FileCopy(HISTORY_PATH, HISTORY_DIR "\call-history.with-prompts.json", false)
+        recovered := true
+    }
     sessions := history["sessions"]
     i := sessions.Length
     while (i >= 1) {
@@ -688,6 +694,21 @@ LoadHistory() {
     if recovered
         SaveHistory()
     KeepGoodCopy()
+}
+
+; Removes the saved text of prepared prompts (the "prompt" field) from every call, keeping
+; the record that a prompt was made (time and helper name). Returns how many were removed.
+HistoryStripPrompts(doc) {
+    n := 0
+    for s in doc["sessions"] {
+        for p in s["preparedPrompts"] {
+            if (p is Map && p.Has("prompt")) {
+                p.Delete("prompt")
+                n += 1
+            }
+        }
+    }
+    return n
 }
 
 ; Reads and checks one history file. Throws when it can't be used.
@@ -976,7 +997,8 @@ BuildDetails(s) {
         sections.Push("PREPARED PROMPTS")
         for p in pp {
             sections.Push("[" IsoToLocal(p.Get("createdAtUtc", ""), "h:mm:ss tt") "] " p.Get("helperLabel", ""))
-            sections.Push(p.Get("prompt", ""))
+            if (Trim(p.Get("prompt", "")) != "")        ; old calls only; new ones don't keep the text
+                sections.Push(p["prompt"])
         }
     }
     return JoinWith(sections, "`r`n`r`n")
@@ -1305,7 +1327,8 @@ HelperClicked(action, *) {
     rec["createdAtUtc"] := NowIso()
     rec["helperId"] := action["id"]
     rec["helperLabel"] := action["label"]
-    rec["prompt"] := prompt
+    ; The prompt text itself is NOT saved: it repeats the whole transcript and every
+    ; reference context, which made the history file huge and slow to load.
     activePrompt := rec
     if IsObject(reviewCall) {
         reviewCall["preparedPrompts"].Push(rec)        ; belongs to the call being reviewed
@@ -1327,10 +1350,6 @@ CopyPromptToClipboard(prompt) {
         return
     }
     A_Clipboard := prompt
-    if (IsObject(activePrompt) && activePrompt["prompt"] !== prompt) {
-        activePrompt["prompt"] := prompt
-        PersistCurrentCall()
-    }
     lastCopiedPrompt := prompt
     hPreviewStatus.Text := "PROMPT · COPIED" ReviewSuffix()
     statusText.Text := "Status: prompt copied to clipboard"

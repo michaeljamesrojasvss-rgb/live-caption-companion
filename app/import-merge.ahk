@@ -339,6 +339,9 @@ MergeCleanSession(raw) {
     for key in ["transcriptLines", "chatBubbles", "preparedPrompts"]
         if (!s.Has(key) || !(s[key] is Array))
             s[key] := []
+    for p in s["preparedPrompts"]                 ; prompt text is no longer kept in history
+        if (p is Map && p.Has("prompt"))
+            p.Delete("prompt")
     if (!s.Has("agentNotes") || Type(s["agentNotes"]) != "String")
         s["agentNotes"] := ""
     if (!s.Has("endedAtUtc") || s["endedAtUtc"] is JNull)

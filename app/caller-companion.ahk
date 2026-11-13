@@ -558,6 +558,7 @@ CallerSearchSelection() {
     r := SF_Classify(text, CallerSetting("PhoneFormats", "dashed"))
     n := SF_OpenSearches(r["terms"])
     statusText.Text := "Status: opened " n " Salesforce search(es) for " r["display"]
+    try TutNote("sfsearch")              ; the tutorial may be waiting for this
 }
 
 ; Text of an Edit control exactly as the control holds it (CRLF kept), so the

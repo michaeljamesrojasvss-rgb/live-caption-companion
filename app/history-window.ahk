@@ -19,6 +19,7 @@
 
 ShowHistoryWindow(*) {
     global historyGui
+    try TutNote("history")               ; the tutorial may be waiting for this
     if !(history is Map) {
         statusText.Text := "Status: call history is still loading - try again in a moment"
         return

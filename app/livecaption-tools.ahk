@@ -70,6 +70,7 @@ LctRestart() {
         return
     }
     statusText.Text := "Status: Windows Live Captions restarted - reconnecting..."
+    try TutNote("restart")               ; the tutorial may be waiting for this
 }
 
 ; Full path to LiveCaptions.exe. AutoHotkey32 is a 32-bit program, so Windows would send
@@ -163,10 +164,12 @@ LctWatchTest() {
         lctTestBusy := false
         if (changeCount > lctTestStartChanges || lastCaption != lctTestStartCaption) {
             statusText.Text := "Status: test OK - Windows Live Captions picked up the voice"
+            try TutNote("testok")
             LctLog("test: captions changed - OK")
         } else {
             statusText.Text := "Status: test FAILED - no captions appeared. Try right-click > Restart Windows Live Captions"
             LctLog("test: no caption change")
+            try TutNote("testfail")
         }
     } catch as err {
         SetTimer(LctWatchTest, 0)

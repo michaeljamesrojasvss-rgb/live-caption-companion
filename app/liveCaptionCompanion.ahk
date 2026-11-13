@@ -7,6 +7,7 @@
 #Include salesforce.ahk
 #Include caller-companion.ahk
 #Include livecaption-tools.ahk
+#Include tutorial.ahk
 #Include copilot-assist.ahk
 #Include history-window.ahk
 #Include notes-resize.ahk
@@ -256,6 +257,7 @@ NotesResizeInit()
 UpdInit()
 MergeInit()
 MainHelperInit()
+TutInit()
 
 ; Mic captions tray toggle (only shown if whisper-stream is available)
 if micAvailable {
@@ -911,6 +913,7 @@ NewCall(*) {
     StartNewCallRecord()
 	CallerOnNewCall()
     statusText.Text := "Status: new call started"
+    try TutNote("newcall")               ; the tutorial may be waiting for this
 }
 
 ; Throws the live call away instead of saving it (a YouTube video, testing):
@@ -1341,6 +1344,10 @@ HelperClicked(action, *) {
     CopyPromptToClipboard(prompt)   ; copies prompt to clipboard (main button stops here)
     SendMessage(0x00B1, 0, 0, hPreview.Hwnd)           ; caret to the start
     SendMessage(0x00B7, 0, 0, hPreview.Hwnd)           ; scroll caret into view
+    try {
+        TutNote("helper")                              ; the tutorial may be waiting for this
+        TutNote("helper:" action["id"])
+    }
 }
 
 CopyPromptToClipboard(prompt) {
@@ -1705,6 +1712,7 @@ ParseHelperImport(text) {
 
 OpenHelperEditor(*) {
     global helperEditorGui
+    try TutNote("editor")                ; the tutorial may be waiting for this
     if (IsSet(helperEditorGui) && IsObject(helperEditorGui)) {
         try {
             helperEditorGui.Show()

@@ -52,3 +52,6 @@ now (see below).
 - Ctrl+Shift+Alt+L (summon the Companion) was **removed** in this setup, because the helper
   only runs while the Companion runs. It comes back as a "summon" hotkey in the hub design.
 - New hotkeys meant to be shareable go in `app\main-helper.ahk`.
+
+
+Credit...

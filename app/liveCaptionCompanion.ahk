@@ -6,6 +6,7 @@
 #Include Json.ahk
 #Include salesforce.ahk
 #Include caller-companion.ahk
+#Include q-alert.ahk
 #Include livecaption-tools.ahk
 #Include tutorial.ahk
 #Include copilot-assist.ahk
@@ -251,6 +252,7 @@ StartNewCallRecord()
 SetTimer(ReadCaption, 200)
 SetTimer(TrackSelection, 250)
 CallerInit()
+QAlertInit()
 LctInit()
 AssistInit()
 NotesResizeInit()
@@ -291,7 +293,7 @@ HandleExit(*) {
         OnMessage(0x0232, WindowMoveEnded, 0)
     }
     ; Each step on its own, so one failing can't skip saving the call
-    for step in [CallerShutdown, MainHelperShutdown, SaveWindowPos, StopMicEngine, SaveNotes, FinishCurrentCall]
+    for step in [CallerShutdown, QAlertShutdown, MainHelperShutdown, SaveWindowPos, StopMicEngine, SaveNotes, FinishCurrentCall]
         ErrRun(step)
     ErrLogShutdown()
 }

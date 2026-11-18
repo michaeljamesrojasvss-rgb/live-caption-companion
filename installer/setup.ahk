@@ -170,7 +170,7 @@ SetupInstall(old) {
     summary := ""
     if (old != "") {
         SetupStatus("Bringing over your calls and settings...")
-        PkgCloseScriptsIn(old, [PKG_MAIN_SCRIPT, "caller-watch.ahk", "main-helper.ahk"])   ; it saves its call as it closes
+        PkgCloseScriptsIn(old, [PKG_MAIN_SCRIPT, "caller-watch.ahk", "q-watch.ahk", "main-helper.ahk"])   ; it saves its call as it closes
         r := SetupImport(old, root "\data")
         summary .= "`n`nBrought over " r.copied " file(s) from your older copy."
         if r.skipped

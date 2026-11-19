@@ -34,8 +34,14 @@
 ;
 ; Messages (WM_COPYDATA, tag TASK_TAG, text split by TAB):
 ;   app -> Tasks   ctx  appHwnd  appName  itemId  itemLabel  note  busy(0/1)
+;                  newitem   appHwnd  appName  itemId  itemLabel   (something new started:
+;                            add the settings' checklist for it, maybe show Tasks)
+;                  dropitem  appHwnd  appName  itemId   (thrown away: remove its
+;                            automatic checklist if untouched)
 ;                  show | showlinked | togglelinked | hide | quit
 ;   Tasks -> app   open  itemId          (show that item, e.g. review the call)
+;                  itemstatus  itemId  open  total   (tasks still open for its
+;                            open item; sent when it changes)
 ; ==============================================================================
 
 TASK_WIN_TITLE := "Caption Companion Tasks"
@@ -69,7 +75,9 @@ TASK_SETTING_DEFAULTS := Map(
     "Hotkey", "^+!t",
     "ToastWidth", 400,
     "ReadVoice", "",                 ; Windows voice name; empty = the default voice
-    "ReadRate", 0)                   ; -10 (slow) .. 10 (fast)
+    "ReadRate", 0,                   ; -10 (slow) .. 10 (fast)
+    "NewItemTemplate", "default-call", ; template id added when an app starts a new item; "" = none
+    "NewItemShow", 0)                ; 1 = also show Tasks (without taking focus)
 
 DetectHiddenWindows(true)            ; other apps and the other copy may be hidden
 OnError(TaskOnError)
@@ -129,6 +137,7 @@ busyApps := Map()            ; app name -> true while that app says you're busy
 lastBusyEndUtc := ""
 pendingShowLinked := false   ; open on "Linked to current" as soon as an app reports
 taskPendingFocus := ""       ; task opened from Up next / an alert, waiting for its app
+taskLastStatus := ""         ; last "itemstatus" sent (only changes are sent)
 
 ; ------------------------------------------------------------------------------
 ; Start
@@ -261,7 +270,7 @@ TaskDefaults() {
     return TaskNewMap("id", "", "title", "", "notes", "", "done", 0
         , "createdAtUtc", "", "doneAtUtc", "", "link", Json.Null
         , "collapsed", 0, "timer", Json.Null, "autoTimer", Json.Null, "askOnDone", Json.Null
-        , "history", []
+        , "history", [], "auto", 0
         , "children", [])
 }
 
@@ -795,8 +804,9 @@ TaskSetupTimerButtons() {
     TaskRelayout()
 }
 
-; view: 0 = keep the current one
-TaskShowWindow(view := 0) {
+; view: 0 = keep the current one. activate: false = show it without taking
+; the focus from what you're doing
+TaskShowWindow(view := 0, activate := true) {
     global pendingShowLinked
     if (view = TASK_VIEW_LINKED && ctxId = "")
         pendingShowLinked := true        ; switch once an app reports what it has open
@@ -810,10 +820,12 @@ TaskShowWindow(view := 0) {
         opts := (IsInteger(w) && IsInteger(h)) ? "w" w " h" h : "w660 h780"
         if (IsInteger(x) && IsInteger(y) && TaskPointOnScreen(x + 40, y + 20))
             opts .= " x" x " y" y
-        tkGui.Show(opts)
+        tkGui.Show(opts (activate ? "" : " NoActivate"))
     } else {
-        tkGui.Show()
+        tkGui.Show(activate ? "" : "NoActivate")
     }
+    if !activate
+        return
     try WinActivate("ahk_id " tkGui.Hwnd)
     try tkTree.Focus()
 }
@@ -2272,6 +2284,7 @@ TaskTick() {
     }
     TAlertSoundTick()
     TaskRefreshUpNext()
+    TaskSendItemStatus()
     if (Mod(taskTickCount, 60) = 0)
         TaskCheckVersion()
 }
@@ -2397,14 +2410,140 @@ TaskShowTemplateMenu(*) {
 }
 
 TaskApplyTemplate(t, *) {
-    root := TaskNewNode(t["name"])
-    for step in t["steps"]
-        root["children"].Push(TaskNodeFromStep(step))
+    root := TaskFromTemplate(t)
     TaskAddRoot(root)
     TaskStructureChanged(root["id"])
     TaskEachIn(root, TaskStartIfNow)          ; planned timers marked "now" start straight away
     l := root["link"]
     TaskStatus("Added '" t["name"] "'" ((l is Map) ? " for " l["label"] : ""))
+}
+
+; A new top-level task (not added yet) with the template's steps under it
+TaskFromTemplate(t) {
+    root := TaskNewNode(t["name"])
+    for step in t["steps"]
+        root["children"].Push(TaskNodeFromStep(step))
+    return root
+}
+
+TaskTemplateById(id) {
+    for t in taskTemplates
+        if (String(t.Get("id", "")) = id)
+            return t
+    return ""
+}
+
+; ==============================================================================
+; New / dropped items from an app (the Companion: a new call / a call it threw
+; away) and progress sent back to it
+; ==============================================================================
+; newitem  appHwnd  appName  itemId  itemLabel
+; Adds the "new item" template's checklist, linked to it (once per item), and
+; shows Tasks if that's switched on. Both are in settings.
+TaskOnNewItem(p) {
+    while (p.Length < 5)
+        p.Push("")
+    app := (Trim(p[3]) = "") ? "App" : Trim(p[3])
+    if IsInteger(p[2])
+        ctxApps[app] := Integer(p[2])
+    id := p[4]
+    if (id = "")
+        return
+    tplId := Trim(TaskSetting("NewItemTemplate"))
+    if (tplId != "" && !TaskHasLinked(app, id)) {
+        t := TaskTemplateById(tplId)
+        if IsObject(t) {
+            root := TaskFromTemplate(t)
+            root["link"] := TaskNewLink(app, id, p[5])
+            root["auto"] := 1                     ; may be removed if the item is thrown away untouched
+            taskDoc["tasks"].Push(root)
+            TaskStructureChanged()
+            TaskEachIn(root, TaskStartIfNow)
+            TaskStatus("Added '" t["name"] "' for " p[5])
+        } else {
+            TaskLog("new item: no template with id '" tplId "' (settings > new calls)")
+        }
+    }
+    if (TaskSetting("NewItemShow") = "1")
+        TaskShowWindow(TASK_VIEW_LINKED, false)
+}
+
+TaskHasLinked(app, id) {
+    for r in taskDoc["tasks"] {
+        l := r["link"]
+        if ((l is Map) && l["id"] = id && l["app"] = app)
+            return true
+    }
+    return false
+}
+
+; dropitem  appHwnd  appName  itemId
+; The app threw that item away (e.g. an empty call): its automatic checklist
+; goes too, but only if nothing was done with it
+TaskOnDropItem(p) {
+    while (p.Length < 4)
+        p.Push("")
+    app := (Trim(p[3]) = "") ? "App" : Trim(p[3])
+    list := taskDoc["tasks"]
+    removed := 0
+    i := list.Length
+    while (i >= 1) {
+        r := list[i]
+        l := r["link"]
+        if ((l is Map) && l["id"] = p[4] && l["app"] = app && r.Get("auto", 0) && TaskUntouched(r)) {
+            TaskEachIn(r, (x) => TAlertClose(x["id"]))
+            list.RemoveAt(i)
+            removed += 1
+        }
+        i -= 1
+    }
+    if removed {
+        TaskStructureChanged()
+        TaskLog("removed " removed " untouched automatic checklist(s) of a dropped item")
+    }
+}
+
+; Nothing ticked, no timer ever started
+TaskUntouched(n) {
+    if (n["done"] || (n["timer"] is Map) || n["history"].Length)
+        return false
+    for c in n["children"]
+        if !TaskUntouched(c)
+            return false
+    return true
+}
+
+; Tells the app how many of the tasks linked to its open item are still open,
+; whenever that changes (the Companion colours its Tasks button with it).
+; Counts the tasks at the end of each branch; a ticked parent counts as all done.
+;   itemstatus  itemId  open  total
+TaskSendItemStatus() {
+    global taskLastStatus
+    hwnd := ctxApps.Get(ctxApp, 0)
+    if (ctxId = "" || !hwnd)
+        return
+    open := 0
+    total := 0
+    for r in taskDoc["tasks"]
+        if TaskLinkIsCurrent(r["link"])
+            TaskCountOpen(r, false, &open, &total)
+    msg := "itemstatus`t" ctxId "`t" open "`t" total
+    if ((msg . hwnd) = taskLastStatus)
+        return
+    if TaskSendTo(hwnd, msg)
+        taskLastStatus := msg hwnd
+}
+
+TaskCountOpen(n, parentDone, &open, &total) {
+    d := parentDone || n["done"]
+    if !n["children"].Length {
+        total += 1
+        if !d
+            open += 1
+        return
+    }
+    for c in n["children"]
+        TaskCountOpen(c, d, &open, &total)
 }
 
 TaskStartIfNow(n) {
@@ -2520,6 +2659,8 @@ TaskHandleMessage(text, *) {
         case "showlinked":   TaskShowWindow(TASK_VIEW_LINKED)
         case "togglelinked": TaskToggleLinked()
         case "hide":         TaskHide()
+        case "newitem":      TaskOnNewItem(p)
+        case "dropitem":     TaskOnDropItem(p)
         case "quit":         ExitApp()
     }
 }
@@ -2655,6 +2796,24 @@ TaskOpenSettings() {
     rhm := g.Add("Edit", "x+10 yp-4 w80 Number", TaskSettingInt("RemindHiddenMin", 0, 1440))
 
     g.SetFont("s10 bold")
+    g.Add("Text", "xm y+18", "New calls (when the Companion starts one)")
+    g.SetFont("s10 norm")
+    g.Add("Text", "xm y+10 " LW, "Add this checklist to the new call")
+    tplNames := ["(none)"]
+    tplIds := [""]
+    for t in taskTemplates {
+        tplNames.Push(t["name"])
+        tplIds.Push(String(t.Get("id", "")))
+    }
+    nit := g.Add("DropDownList", "x+10 yp-4 w220", tplNames)
+    nit.Value := 1
+    for i, tid in tplIds
+        if (i > 1 && tid != "" && tid = TaskSetting("NewItemTemplate"))
+            nit.Value := i
+    nis := g.Add("Checkbox", "xm y+12", "Also show the Tasks window (without taking the focus)")
+    nis.Value := (TaskSetting("NewItemShow") = "1")
+
+    g.SetFont("s10 bold")
     g.Add("Text", "xm y+18", "Tasks window")
     g.SetFont("s10 norm")
     g.Add("Text", "xm y+10 " LW, "Timer buttons (like 30s, 2, 5, 15)")
@@ -2718,7 +2877,9 @@ TaskOpenSettings() {
             , "Hotkey", hk.Value
             , "ToastWidth", tw.Value = "" ? TASK_SETTING_DEFAULTS["ToastWidth"] : tw.Value
             , "ReadVoice", voice.Value = 1 ? "" : voice.Text
-            , "ReadRate", IsInteger(r) ? Min(10, Max(-10, Integer(r))) : 0)
+            , "ReadRate", IsInteger(r) ? Min(10, Max(-10, Integer(r))) : 0
+            , "NewItemTemplate", tplIds[nit.Value]
+            , "NewItemShow", nis.Value ? 1 : 0)
         try {
             for k, v in vals
                 IniWrite(v, TASK_INI, "Settings", k)

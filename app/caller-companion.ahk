@@ -301,8 +301,10 @@ CallerOnRing(numberField, nameField, source) {
         CallerAutoNewCall()
     callerInfo := info
     callerPhase := "ringing"
-    if !waiting
+    if !waiting {
         CallerSaveToRecord()
+        TaskLinkNewItem()                               ; Tasks: a new call (its checklist)
+    }
     CallerRefresh()
     if CallerFlag("Popup")
         CallerShowCard()

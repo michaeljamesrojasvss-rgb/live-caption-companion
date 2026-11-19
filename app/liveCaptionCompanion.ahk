@@ -99,7 +99,7 @@ micLogFile := micDataDir "\engine.log"
 MIC_INI := DATA_DIR "\live-captions.ini"
 WINDOW_MIN_W := 420          ; keep in sync with +MinSize420x480 (the top button row needs ~410)
 WINDOW_MIN_H := 480
-BOTTOM_WRAP_W := 660         ; below this client width the bottom buttons wrap onto two rows
+BOTTOM_WRAP_W := 690         ; below this client width the bottom buttons wrap onto two rows
 BOTTOM_BAND_1 := 80          ; bottom band height: debug line + one row of buttons
 BOTTOM_BAND_2 := 114         ; ... and with two rows of buttons
 
@@ -180,7 +180,9 @@ btnDiscard := myGui.Add("Button", "x+8 w100", "Discard call")
 btnHist := myGui.Add("Button", "x+8 w100", "Call history")
 btnHelp := myGui.Add("Button", "x+8 w100", "Helpers ▼")
 btnCopy := myGui.Add("Button", "x+8 w125", "Copy transcript")
-btnTasks := myGui.Add("Button", "x+8 w80", "Tasks ▸")
+; a Text, not a Button: buttons can't be coloured (tasks-link.ahk paints it:
+; green = all tasks of the call on screen done, orange = some still open)
+btnTasks := myGui.Add("Text", "x+8 w110 h28 +0x200 Center +Border Background2A3442 cF1F5FB", "Tasks ▸")
 transcript.GetPos(&viewLeft, &viewTop)
 
 btnNew.OnEvent("Click", NewCall)
@@ -851,6 +853,7 @@ FinishCurrentCall() {
         return
 
     if (sessionLines.Length = 0 && currentCall["preparedPrompts"].Length = 0 && RemovedCount(currentCall) = 0) {
+        TaskLinkDropItem(currentCall["id"])   ; an empty call isn't kept: nor is its untouched checklist
         sessions := history["sessions"]
         Loop sessions.Length {
             if (sessions[A_Index] == currentCall) {
@@ -919,7 +922,7 @@ NewCall(*) {
     StartNewCallRecord()
 	CallerOnNewCall()
     statusText.Text := "Status: new call started"
-    TaskLinkPush()                       ; Tasks: "This call" is the new call
+    TaskLinkNewItem()                    ; Tasks: this call is on screen, and it's new
     try TutNote("newcall")               ; the tutorial may be waiting for this
 }
 
@@ -944,6 +947,7 @@ DiscardCall(*) {
         try historyGui.Destroy()       ; its list would still show the discarded call
     }
     if IsObject(currentCall) {
+        TaskLinkDropItem(currentCall["id"])   ; Tasks: drop its checklist if untouched
         sessions := history["sessions"]
         Loop sessions.Length {
             if (sessions[A_Index] == currentCall) {

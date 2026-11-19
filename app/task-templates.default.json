@@ -1,6 +1,17 @@
 {
   "templates": [
     {
+      "id": "default-call",
+      "name": "Default call",
+      "steps": [
+        { "title": "Caller's full name" },
+        { "title": "Company name (if applicable)" },
+        { "title": "Reason for the call" },
+        { "title": "Reach out to anyone (if needed)" },
+        { "title": "Log the call" }
+      ]
+    },
+    {
       "id": "snow-service-request",
       "name": "Snow call - new service request",
       "steps": [

@@ -10,7 +10,8 @@ PKG_MAIN_SCRIPT := "liveCaptionCompanion.ahk"
 
 ; Files that belong to the agent (data\), never to the app (app\)
 PKG_DATA_FILES := ["call-history.json", "call-history.backup.json", "call-helpers.json"
-    , "call-helpers.backup.json", "live-captions.ini", "copilot-targets.ini"]
+    , "call-helpers.backup.json", "live-captions.ini", "copilot-targets.ini"
+    , "tasks.json", "task-templates.json", "tasks.ini"]
 
 ; ------------------------------------------------------------------------------
 ; Versions: dates like 2026.10.28, with an optional .2 / .3 for same-day fixes

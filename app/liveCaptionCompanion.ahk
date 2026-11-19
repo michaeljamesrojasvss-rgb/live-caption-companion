@@ -15,6 +15,7 @@
 #Include updates.ahk
 #Include import-merge.ahk
 #Include main-helper-host.ahk
+#Include tasks-link.ahk
 
 ; ==============================================================================
 ; State
@@ -98,7 +99,7 @@ micLogFile := micDataDir "\engine.log"
 MIC_INI := DATA_DIR "\live-captions.ini"
 WINDOW_MIN_W := 420          ; keep in sync with +MinSize420x480 (the top button row needs ~410)
 WINDOW_MIN_H := 480
-BOTTOM_WRAP_W := 570         ; below this client width the bottom buttons wrap onto two rows
+BOTTOM_WRAP_W := 660         ; below this client width the bottom buttons wrap onto two rows
 BOTTOM_BAND_1 := 80          ; bottom band height: debug line + one row of buttons
 BOTTOM_BAND_2 := 114         ; ... and with two rows of buttons
 
@@ -179,6 +180,7 @@ btnDiscard := myGui.Add("Button", "x+8 w100", "Discard call")
 btnHist := myGui.Add("Button", "x+8 w100", "Call history")
 btnHelp := myGui.Add("Button", "x+8 w100", "Helpers ▼")
 btnCopy := myGui.Add("Button", "x+8 w125", "Copy transcript")
+btnTasks := myGui.Add("Button", "x+8 w80", "Tasks ▸")
 transcript.GetPos(&viewLeft, &viewTop)
 
 btnNew.OnEvent("Click", NewCall)
@@ -186,6 +188,7 @@ btnDiscard.OnEvent("Click", DiscardCall)
 btnHist.OnEvent("Click", ShowHistoryWindow)
 btnHelp.OnEvent("Click", ToggleHelpers)
 btnCopy.OnEvent("Click", CopyTranscript)
+btnTasks.OnEvent("Click", TaskLinkOpen)
 notesBox.OnEvent("Change", NotesChanged)
 btnChat.OnEvent("Click",    (*) => SetView(true))
 btnTrans.OnEvent("Click",   (*) => SetView(false))
@@ -259,6 +262,7 @@ NotesResizeInit()
 UpdInit()
 MergeInit()
 MainHelperInit()
+TaskLinkInit()
 TutInit()
 
 ; Mic captions tray toggle (only shown if whisper-stream is available)
@@ -915,6 +919,7 @@ NewCall(*) {
     StartNewCallRecord()
 	CallerOnNewCall()
     statusText.Text := "Status: new call started"
+    TaskLinkPush()                       ; Tasks: "This call" is the new call
     try TutNote("newcall")               ; the tutorial may be waiting for this
 }
 
@@ -2270,10 +2275,10 @@ BottomRowLayout(width, height) {
     if (width < BOTTOM_WRAP_W) {
         debugText.Move(, height - BOTTOM_BAND_2 + 10, width - 20)
         PlaceButtonRow([btnNew, btnDiscard, btnHist], viewLeft, height - 74)
-        PlaceButtonRow([btnHelp, btnCopy], viewLeft, height - 40)
+        PlaceButtonRow([btnHelp, btnCopy, btnTasks], viewLeft, height - 40)
     } else {
         debugText.Move(, height - BOTTOM_BAND_1 + 10, width - 20)
-        PlaceButtonRow([btnNew, btnDiscard, btnHist, btnHelp, btnCopy], viewLeft, height - 40)
+        PlaceButtonRow([btnNew, btnDiscard, btnHist, btnHelp, btnCopy, btnTasks], viewLeft, height - 40)
     }
 }
 
@@ -2313,6 +2318,7 @@ EnterReview(session) {
     RenderTranscript()
     SendMessage(0x0115, 6, 0, chatBox.Hwnd)      ; SB_TOP: start reading from the beginning
     SendMessage(0x0115, 6, 0, transcript.Hwnd)
+    TaskLinkPush()                               ; Tasks: "This call" is now the reviewed call
 }
 
 ExitReview(*) {
@@ -2332,6 +2338,7 @@ ExitReview(*) {
     ScrollToEnd(chatBox)
     ScrollToEnd(transcript)
     statusText.Text := "Status: back to the live call"
+    TaskLinkPush()                               ; Tasks: "This call" is the live call again
 }
 
 ; From the live view: the most recent earlier call. While reviewing: one call further back.

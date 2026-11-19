@@ -53,5 +53,26 @@ now (see below).
   only runs while the Companion runs. It comes back as a "summon" hotkey in the hub design.
 - New hotkeys meant to be shareable go in `app\main-helper.ahk`.
 
+### Tasks: the second app (2026.11.19)
+
+- `app\tasks.ahk` is the first app besides the Companion. It already follows the hub rules:
+  its own process, one copy only (starting it again just opens it), and its own summon hotkey
+  (Ctrl+Shift+Alt+T, changeable in Tasks > ⚙).
+- For now the **Companion starts it** (tray > "Tasks app (timers and checklists)", **on by
+  default**) and has a Tasks button for the call on screen. When the hub exists, starting it
+  moves there; the Companion keeps only the button and the call info it sends.
+- Tasks knows nothing about calls: a task can carry a **link** {app, id, label} that another
+  app gave it, and apps can say "the user is busy". The Companion is one such app
+  (`app\tasks-link.ahk`); Open on a linked task asks it to show the call in review.
+- Next for Tasks: a guided tutorial (like `tutorial.ahk`), multi-select (Ctrl+click to mark
+  several tasks, then act on all of them), maybe "dock beside the Companion".
+
+### Companion UI overhaul (agreed, not started)
+
+- The Companion's tray menu and window are getting crowded. Plan: one **Settings window** (like
+  Tasks > ⚙) instead of the long tray menu, and a redesign of the main window.
+- Build the new UI next to the old one, behind a setting "Use the new UI", so coworkers can
+  switch back while it settles. Options to be discussed before building.
+
 
 Credit...

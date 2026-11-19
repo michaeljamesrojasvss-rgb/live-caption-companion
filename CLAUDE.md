@@ -13,6 +13,14 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
 - `app\main-helper.ahk` - extra hotkeys (Salesforce/ServiceChannel from clipboard, etc.). Ships, but OFF by
   default: each person turns it on from the tray, saved in their own `data\live-captions.ini` [MainHelper].
   Runs as its own process (started by `main-helper-host.ahk`). New personal-but-shareable hotkeys go here.
+- `app\tasks.ahk` (+ `tasks-alert.ahk`, prefix `Task*` / `TAlert*`) - the Tasks app: nested tasks, timers,
+  planned timers, alerts on every virtual desktop, templates, read aloud. Its OWN app and process, and it
+  must stay **call-agnostic**: no call/3CX/caption words or fields in it. Other apps give it generic
+  links {app, id, label} and a "busy" flag; the protocol is at the top of `tasks.ahk`. Data:
+  `data\tasks.json`, `data\task-templates.json` (new templates in `app\task-templates.default.json` are
+  added once, by id), `data\tasks.ini`. The Companion side is `app\tasks-link.ahk` (`TaskLink*`): starts
+  it (on by default, tray toggle), the Tasks button, sends the call on screen + busy, answers "open".
+  Tasks never reads call-history.json.
 - `tools\dev\` - probes/inspectors (not shipped). `personal\` - the owner's private scripts (never shipped). `archive\` - old code.
 - Details: `docs\INSTALL-AND-UPDATES.md`.
 - Future plans (more apps, main helper as a hub that summons them, one bundle): `README.md` > Plans.

@@ -1,0 +1,98 @@
+{
+  "templates": [
+    {
+      "id": "snow-service-request",
+      "name": "Snow call - new service request",
+      "steps": [
+        {
+          "title": "Call received",
+          "children": [
+            { "title": "Tell the customer we will call back with the ETA" }
+          ]
+        },
+        {
+          "title": "Create the Salesforce case",
+          "askWhenDone": { "question": "Paste the link to the Salesforce case:", "label": "Case link", "required": true },
+          "children": [
+            { "title": "Caller's name" },
+            { "title": "Caller's company" },
+            { "title": "Site address for the service request" },
+            { "title": "Service requested (confirm it with the caller)" }
+          ]
+        },
+        {
+          "title": "Call the service provider - ask for an ETA",
+          "notes": "Tick an attempt only when nobody answered. Got an ETA? Go to the ETA section below.",
+          "children": [
+            { "title": "1st call attempt - no answer, voicemail left" },
+            {
+              "title": "2nd call attempt - still voicemail (hang up)",
+              "timer": { "duration": "5m", "start": "afterPrevious" }
+            }
+          ]
+        },
+        {
+          "title": "No ETA after 2 attempts - escalate",
+          "children": [
+            { "title": "Message the account manager: can the case be reassigned? (provider tried twice)" },
+            {
+              "title": "No reply - message the Operations Manager",
+              "timer": { "duration": "5m", "start": "afterPrevious" }
+            },
+            {
+              "title": "No reply - message the Account Director",
+              "timer": { "duration": "5m", "start": "afterPrevious" }
+            }
+          ]
+        },
+        {
+          "title": "Got an ETA from the provider",
+          "children": [
+            { "title": "Call the customer back with the ETA (our promise)" },
+            {
+              "title": "ETA reached - confirm the provider is on site",
+              "notes": "Call the provider, or check the work orders under the case for a check-in.",
+              "timer": { "ask": true, "question": "When is the provider's ETA?", "start": "afterPrevious" },
+              "children": [
+                { "title": "Provider confirmed on site / checked in on the work order" },
+                { "title": "Set the case to In Progress" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "snow-service-request-simple",
+      "name": "Snow call - simple checklist",
+      "steps": [
+        { "title": "Call received - tell the customer we will call back with the ETA" },
+        {
+          "title": "Create the Salesforce case",
+          "notes": "Caller's name, company, site address, and the service they need (confirm it with them).",
+          "askWhenDone": { "question": "Paste the link to the Salesforce case:", "label": "Case link", "required": true }
+        },
+        { "title": "Call the provider for an ETA - 1st try (no answer: leave a voicemail)" },
+        {
+          "title": "Call the provider - 2nd try (still voicemail: hang up)",
+          "timer": { "duration": "5m", "start": "afterPrevious" }
+        },
+        { "title": "No ETA: message the account manager to reassign the case" },
+        {
+          "title": "No reply: message the Operations Manager",
+          "timer": { "duration": "5m", "start": "afterPrevious" }
+        },
+        {
+          "title": "No reply: message the Account Director",
+          "timer": { "duration": "5m", "start": "afterPrevious" }
+        },
+        { "title": "Got an ETA: call the customer back with it" },
+        {
+          "title": "ETA reached: confirm the provider is on site (call, or check the work order)",
+          "timer": { "ask": true, "question": "When is the provider's ETA?", "start": "afterPrevious" }
+        },
+        { "title": "Set the case to In Progress" }
+      ]
+    }
+  ]
+}

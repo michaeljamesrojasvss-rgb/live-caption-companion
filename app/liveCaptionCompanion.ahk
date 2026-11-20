@@ -19,6 +19,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include import-merge.ahk
 #Include main-helper-host.ahk
 #Include screen-ask-link.ahk       ; Screen ask (own app, off by default): tray > Screen ask
+#Include agent-link.ahk            ; Agent (own app, off by default): tray > Agent
 #Include tasks-link.ahk
 #Include webview-guard.ahk         ; keeps the built-in browsers (WebView2) in check
 #Include copilot-pool-link.ahk
@@ -295,6 +296,7 @@ UpdInit()
 MergeInit()
 MainHelperInit()
 SaLinkInit()                       ; after MainHelperInit: its tray menu goes right below
+AgtLinkInit()                      ; the Agent's tray item (after SaLinkInit)
 TaskLinkInit()
 DbgInitCompanion()                 ; debug trace: tray items + logs every button click
 PoolLinkInit()                     ; after AssistInit: adds to its tray menu
@@ -333,7 +335,7 @@ HandleExit(*) {
         OnMessage(0x0232, WindowMoveEnded, 0)
     }
     ; Each step on its own, so one failing can't skip saving the call
-    for step in [CallerShutdown, QAlertShutdown, MainHelperShutdown, SaLinkShutdown, PoolLinkShutdown, SaveWindowPos, StopMicEngine, SaveNotes, FinishCurrentCall]
+    for step in [CallerShutdown, QAlertShutdown, MainHelperShutdown, SaLinkShutdown, AgtLinkShutdown, PoolLinkShutdown, SaveWindowPos, StopMicEngine, SaveNotes, FinishCurrentCall]
         ErrRun(step)
     ErrLogShutdown()
 }

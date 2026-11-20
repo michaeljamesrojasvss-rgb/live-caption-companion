@@ -15,6 +15,7 @@ $icons = @(
     @{ Name = "tasks";     Color = "#16A34A"; Glyph = 0xE73E },   # CheckMark     - Tasks
     @{ Name = "pool";      Color = "#7C3AED"; Glyph = 0xE8BD },   # Message       - Copilot pool
     @{ Name = "screen-ask"; Color = "#EA580C"; Glyph = 0xE721 },  # Search        - Screen ask
+    @{ Name = "agent";     Color = "#DB2777"; Glyph = 0xE99A },   # Robot         - Agent
     @{ Name = "updater";   Color = "#475569"; Glyph = 0xE895 }    # Sync          - updater
 )
 $sizes = 16, 20, 24, 32, 40, 48, 64, 256

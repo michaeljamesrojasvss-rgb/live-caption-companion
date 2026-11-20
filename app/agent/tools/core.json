@@ -1,0 +1,71 @@
+{
+  "group": "core",
+  "about": "Increment 1: harmless tools that prove the agent loop, approvals and images. See docs\\AGENT.md.",
+  "tools": [
+    {
+      "name": "get_time",
+      "title": "Date and time",
+      "description": "Returns the PC's local date, time, weekday and UTC offset.",
+      "inputSchema": { "type": "object", "properties": {} },
+      "approval": "auto",
+      "handler": "GetTime"
+    },
+    {
+      "name": "list_folder",
+      "title": "List a folder",
+      "description": "Lists the files and sub-folders in a folder (name, size, last changed). Only folders I allowed can be read; leave path empty for the first allowed folder. The allowed folders are: {{allowedFolders}}",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "path": { "type": "string", "description": "Full folder path, or empty" } }
+      },
+      "approval": "auto",
+      "handler": "ListFolder"
+    },
+    {
+      "name": "read_text_file",
+      "title": "Read a text file",
+      "description": "Returns the text of a file inside an allowed folder (text files only, up to {{readMaxKB}} KB).",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "path": { "type": "string", "description": "Full file path" } },
+        "required": ["path"]
+      },
+      "approval": "auto",
+      "handler": "ReadTextFile"
+    },
+    {
+      "name": "read_clipboard",
+      "title": "Read the clipboard",
+      "description": "Returns the text currently on my clipboard.",
+      "inputSchema": { "type": "object", "properties": {} },
+      "approval": "ask",
+      "handler": "ReadClipboard"
+    },
+    {
+      "name": "take_screenshot",
+      "title": "Take a screenshot",
+      "description": "Takes a screenshot and attaches it to my next message as an image. monitor: 0 = all monitors in one image (default), 1, 2, ... = only that monitor.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "monitor": { "type": "integer", "description": "0 = all, or a monitor number" } }
+      },
+      "approval": "ask",
+      "handler": "TakeScreenshot"
+    },
+    {
+      "name": "show_message",
+      "title": "Show me a message",
+      "description": "Shows me a message in a small window on my screen.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message": { "type": "string", "description": "The message" },
+          "title": { "type": "string", "description": "Optional window title" }
+        },
+        "required": ["message"]
+      },
+      "approval": "ask",
+      "handler": "ShowMessage"
+    }
+  ]
+}

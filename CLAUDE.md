@@ -61,6 +61,15 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   Screen ask > On ([ScreenAsk] in live-captions.ini), side `app\screen-ask-link.ahk` (`SaLink*`). Failure =
   marked screenshot on the clipboard + a note. Pool side: `images` in an ask (files in `APP_IMAGE_INBOX`
   only), attached by the worker per the site's `images` block. Design: `docs\SCREEN-ASK.md`.
+- `app\agent.ahk` (+ `agent-protocol.ahk` `AgtProto*`, `agent-tools.ahk` `AgtTools*`/`AgtT_*`, prefix `Agt*`) - the
+  Agent: a chat AI (through the pool, kept conversation `agent`) that uses tools like Claude Code. It replies
+  with ONE JSON object (`{"tool","args","why"}` or `{"final"}`), the agent runs the tool (after your OK for
+  `approval: ask` tools) and sends the result back (images too), until final / Stop / MaxSteps / RunMaxMin.
+  Tools are MCP-shaped JSON in `app\agent\tools\*.json` + an AHK handler `AgtT_<handler>`; the messages to
+  the AI are templates in `app\agent\instructions.md` (`.md`, not `.txt`: releases drop .txt files). Its OWN
+  app and process, generic. **OFF by default** for workmates (tray > Agent > On, `live-captions.ini` [Agent]
+  Enabled; ON by default in dev mode); Companion side `app\agent-link.ahk` (`AgtLink*`). Logs never hold the task, replies or results. Screen capture: `app\screen-grab.ahk`
+  (`Grab*`). Design + increments (own browser, real MCP servers, Salesforce/PC later): `docs\AGENT.md`.
 - `app\webview-guard.ahk` (`Wvg*`) - **memory guard** for every built-in browser (WebView2), used by the Companion,
   the pool and Screen ask. Rule: a WebView2 app must never outlive its users or grow without limit. The pool
   closes itself when no app/window uses it (`NoAppQuitSec`) and the Companion quits it on exit; the pool audits

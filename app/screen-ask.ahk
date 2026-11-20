@@ -7,6 +7,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include debug-trace.ahk
 #Include webview-guard.ahk
 #Include *i %A_ScriptDir%\lib\WebView2\WebView2.ahk
+#Include *i %A_ScriptDir%\lib\OCR.ahk                 ; Windows' built-in OCR ("Copy text")
 ; ==============================================================================
 ; screen-ask.ahk  -  Screen ask: freeze the screen, mark something, ask Copilot about it
 ;
@@ -65,6 +66,7 @@ SA_DEFAULTS := Map(
     "Tool", "pen",                 ; last used marking tool
     "KeepMin", 30,                 ; leftover image files are deleted after this long
     "MaxMB", 350,                  ; the overlay's browser over this while hidden = it's started fresh (memory guard)
+    "OcrLang", "",                 ; Copy text: OCR language (e.g. en-US); empty = the first one Windows has for you
     ; {{screens}} {{marked}} {{closeups}} {{focus}} {{question}} - \n = new line
     "Prompt", "Image 1 is a screenshot of my screen ({{screens}}).{{marked}}{{closeups}}{{focus}}\n\n{{question}}")
 
@@ -514,6 +516,13 @@ SaHandlePage(raw) {
                 if mine
                     SaDropShot(false)
                 SaSend(m)
+            case "ocr":                            ; Copy text: read from the clean screenshot, then let it go
+                if mine {
+                    SaHideOverlay()
+                    path := saShot.path
+                    SaOcrCopy(path, m.Get("rects", []))
+                    SaDropShot(false)
+                }
             case "error":
                 if (mine || !m.Has("shot"))
                     SaDropShot()
@@ -760,7 +769,7 @@ SaHousekeep() {
 ; Deletes leftover screenshots / images (all of them at the start, else older than KeepMin)
 SaCleanup(all) {
     keep := Max(1, SaNum("KeepMin")) * 60
-    for dir in [SA_LOCAL "\shot-*.png", APP_IMAGE_INBOX "\screen-ask-*.png"] {
+    for dir in [SA_LOCAL "\shot-*.png", SA_LOCAL "\ocr-*.png", APP_IMAGE_INBOX "\screen-ask-*.png"] {
         Loop Files dir {
             if (!all && DateDiff(A_Now, A_LoopFileTimeModified, "Seconds") < keep)
                 continue
@@ -774,6 +783,94 @@ SaCleanup(all) {
             if !inUse
                 try FileDelete(A_LoopFileFullPath)
         }
+    }
+}
+
+; ==============================================================================
+; Copy text: Windows' built-in OCR (lib\OCR.ahk) on the CLEAN screenshot (never the marks), each marked
+; area in order (no mark = the whole screen). Nothing leaves the PC; nothing is sent to Copilot.
+; Small areas are enlarged first (small text reads better); the whole screen is read at its own size
+; (tested 2026-11-21: enlarging a full screen made it slightly worse).
+; ==============================================================================
+SaOcrCopy(path, rects) {
+    t0 := A_TickCount
+    if !IsSet(OCR) {
+        SaToast("Copy text isn't available: the OCR library (app\lib\OCR.ahk) is missing.", 6000)
+        return
+    }
+    if !(rects is Array) || !rects.Length
+        rects := [Map("x", 0, "y", 0, "w", saShot.vw, "h", saShot.vh)]
+    parts := [], words := 0
+    ; We crop and enlarge each area ourselves (GDI+, high-quality) and give OCR a ready image: the library's
+    ; own crop+scale together is broken (it scales the whole picture to the crop's size, then crops outside
+    ; it -> "AsyncInfo failed ... 2147942487" = invalid argument; seen 2026-11-21). Library kept unmodified.
+    tmp := SA_LOCAL "\ocr-" A_TickCount ".png"
+    src := 0
+    try {
+        lang := Trim(SaSetting("OcrLang"))
+        SaGdipStart()
+        if (DllCall("gdiplus\GdipCreateBitmapFromFile", "WStr", path, "Ptr*", &src) || !src)
+            throw Error("couldn't open the screenshot")
+        for r in rects {
+            x := Max(0, Round(r.Get("x", 0))), y := Max(0, Round(r.Get("y", 0)))
+            w := Min(Round(r.Get("w", 0)), saShot.vw - x), h := Min(Round(r.Get("h", 0)), saShot.vh - y)
+            if (w < 4 || h < 4)
+                continue
+            big := Max(w, h)
+            scale := big < 500 ? 3 : big < 1200 ? 2 : 1
+            while (scale > 1 && big * scale > OCR.MaxImageDimension)
+                scale -= 1
+            SaCropScale(src, x, y, w, h, scale, tmp)
+            res := (lang != "") ? OCR.FromFile(tmp, {lang: lang}) : OCR.FromFile(tmp)
+            try FileDelete(tmp)
+            txt := Trim(res.Text, " `t`r`n")
+            if (txt != "") {
+                parts.Push(txt)
+                words += res.Words.Length
+            }
+        }
+    } catch as err {
+        if src
+            DllCall("gdiplus\GdipDisposeImage", "Ptr", src)
+        try FileDelete(tmp)
+        SaLog("copy text FAILED: " err.Message)
+        SaToast("Copy text didn't work: " err.Message, 8000)
+        return
+    }
+    DllCall("gdiplus\GdipDisposeImage", "Ptr", src)
+    DbgTrace("screen", "copy text: " rects.Length " area(s), " words " words in " (A_TickCount - t0) " ms")
+    if !parts.Length {
+        SaToast("No text found in the " (rects.Length > 1 ? "marked areas." : "marked area."), 4000)
+        return
+    }
+    text := ""
+    for p in parts
+        text .= (text = "" ? "" : "`r`n`r`n") StrReplace(StrReplace(p, "`r`n", "`n"), "`n", "`r`n")
+    A_Clipboard := text
+    first := StrSplit(text, "`n", "`r")[1]
+    SaToast("Copied " words " word" (words = 1 ? "" : "s") " to the clipboard:`n" (StrLen(first) > 90 ? SubStr(first, 1, 90) "..." : first), 4000)
+}
+
+; One area of a GDI+ image, enlarged (high-quality bicubic) and saved as a PNG for OCR
+SaCropScale(src, x, y, w, h, scale, out) {
+    dw := w * scale, dh := h * scale
+    dst := 0, g := 0
+    if (DllCall("gdiplus\GdipCreateBitmapFromScan0", "Int", dw, "Int", dh, "Int", 0, "Int", 0x26200A, "Ptr", 0, "Ptr*", &dst) || !dst)
+        throw Error("couldn't make the image to read (" dw "x" dh ")")
+    try {
+        DllCall("gdiplus\GdipGetImageGraphicsContext", "Ptr", dst, "Ptr*", &g)
+        DllCall("gdiplus\GdipSetInterpolationMode", "Ptr", g, "Int", 7)    ; HighQualityBicubic
+        DllCall("gdiplus\GdipSetPixelOffsetMode", "Ptr", g, "Int", 4)      ; HighQuality
+        r := DllCall("gdiplus\GdipDrawImageRectRectI", "Ptr", g, "Ptr", src, "Int", 0, "Int", 0, "Int", dw, "Int", dh
+            , "Int", x, "Int", y, "Int", w, "Int", h, "Int", 2, "Ptr", 0, "Ptr", 0, "Ptr", 0)   ; 2 = UnitPixel
+        DllCall("gdiplus\GdipDeleteGraphics", "Ptr", g)
+        if r
+            throw Error("couldn't cut out the area (GDI+ error " r ")")
+        r := DllCall("gdiplus\GdipSaveImageToFile", "Ptr", dst, "WStr", out, "Ptr", SaPngClsid(), "Ptr", 0)
+        if r
+            throw Error("couldn't save the area (GDI+ error " r ")")
+    } finally {
+        DllCall("gdiplus\GdipDisposeImage", "Ptr", dst)
     }
 }
 

@@ -60,6 +60,7 @@
   <button id="bClear" title="Remove every mark"><span class="ico">⌫</span>Clear</button>
   <span class="sep"></span>
   <button id="bWhole" title="Ask about the whole screen, without marking anything"><span class="ico">🖥</span>Whole screen</button>
+  <button id="bTextBar" title="Copy the text in the marked areas - or the whole screen if nothing is marked - to the clipboard. Read on this PC, nothing is sent. (T)"><span class="ico">𝐓</span>Copy text</button>
   <button id="bSettings" title="Screen ask settings (shortcut, mark colour, prompt)"><span class="ico">⚙</span></button>
   <button id="bCancel" title="Close without asking (Esc)"><span class="ico">✕</span>Cancel</button>
 </div>
@@ -67,7 +68,8 @@
 <div id="ask" class="ui">
   <textarea id="q" placeholder="Ask about what you marked… (empty = explain it)"></textarea>
   <div class="row">
-    <span class="grow" id="askHint">Enter = send · Shift+Enter = new line · you can mark more</span>
+    <span class="grow" id="askHint">Enter = send · you can mark more</span>
+    <button id="bText" title="Copy the text in the marked areas to the clipboard - read on this PC, nothing is sent (T)">Copy text</button>
     <button id="bCopy" title="Copy the marked screenshot to the clipboard instead of sending it">Copy image</button>
     <button id="bSend" class="send" title="Send to Copilot (Enter)">Send ➤</button>
   </div>
@@ -307,6 +309,20 @@
     catch (e) { post({ t: "error", shot: S.id, msg: "couldn't make the image: " + ((e && e.message) || e) }); }
     if (shot === S) reset();
   }
+  // Copy text: the app reads the CLEAN screenshot (no marks) with Windows' own OCR - the areas around
+  // each mark, in order (a little margin so letters on the line aren't cut); nothing marked = whole screen
+  function copyText() {
+    if (!shot || sending) return;
+    sending = true;
+    const S = shot;
+    const rects = marks.map(m => {
+      const b = bboxOf(m), p = 6 * (m.mon ? m.mon.scale : 1);
+      const x = Math.max(0, b.x - p), y = Math.max(0, b.y - p);
+      return { x: Math.round(x), y: Math.round(y), w: Math.round(Math.min(S.w - x, b.w + 2 * p)), h: Math.round(Math.min(S.h - y, b.h + 2 * p)) };
+    });
+    post({ t: "ocr", shot: S.id, rects });
+    reset();
+  }
   function showBusy() { const mon = monAt(shot.cursor.x, shot.cursor.y); busy.style.display = "block"; place(busy, mon.x + 20 * mon.scale, mon.y + 20 * mon.scale, mon.scale); }
   function cancel() { post({ t: "cancel" }); reset(); }
 
@@ -330,6 +346,8 @@
   $("bCancel").onclick = cancel;
   $("bSend").onclick = send;
   $("bCopy").onclick = copyImage;
+  $("bText").onclick = copyText;
+  $("bTextBar").onclick = copyText;
   q.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
@@ -341,6 +359,7 @@
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     const k = e.key.toLowerCase();
     if (k === "p") setTool("pen"); else if (k === "b") setTool("box"); else if (k === "o") setTool("oval");
+    else if (k === "t") copyText();
     else if (e.key === "Enter" && asking) send();
   });
 

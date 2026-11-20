@@ -6,6 +6,11 @@
 | `Promise.ahk`, `ComVar.ahk` | thqby/ahk2_lib (needed by WebView2.ahk via `#Include ..\`) | same commit | MIT |
 | `WebView2\32bit\WebView2Loader.dll` | Microsoft NuGet package `Microsoft.Web.WebView2` 1.0.4314.35, `build\native\x86` | 1.0.4314.35, signed by Microsoft | `WebView2\LICENSE-Microsoft-WebView2.txt` |
 | `WebView2\64bit\WebView2Loader.dll` | same package, `build\native\x64` | same | same |
+| `OCR.ahk` | Descolada/OCR on GitHub (`Lib/OCR.ahk`), wraps Windows' built-in OCR (`Windows.Media.Ocr`) | 2.0.0, repo commit 15154d1 (2025-11-09) | MIT (`LICENSE-Descolada-OCR.txt`) |
+
+- `OCR.ahk` (used by Screen ask's "Copy text"): reviewed 2026-11-21 - no network, files, clipboard or
+  launching programs; only Windows' WinRT OCR/imaging classes. Its MCode (grayscale/invert/monochrome) and
+  Click/Highlight helpers are not used by us. Its class sets itself up when the script loads.
 
 - WebView2.ahk picks `32bit\` or `64bit\` by itself (from `A_PtrSize`), so the 32-bit
   `runtime\AutoHotkey32.exe` works with it.

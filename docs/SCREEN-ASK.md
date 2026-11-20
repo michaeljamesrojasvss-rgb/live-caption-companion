@@ -11,6 +11,13 @@ it's sent, so the AI knows what you mean.
    Right-click or Ctrl+Z = undo, Esc / Cancel = nothing is sent. **Whole screen** = ask without marking.
 4. A **question box** appears next to your mark: type a question, or leave it empty ("Explain what I
    marked."). **Enter / Send** sends it. **Copy image** puts the marked screenshot on the clipboard instead.
+   **Copy text** (box, toolbar or T) = quick OCR instead: the text of the marked areas (or the whole
+   screen if nothing is marked) goes on the clipboard. Read on this PC by Windows' built-in OCR
+   (`lib\OCR.ahk`, Descolada/OCR, MIT) from the clean screenshot - never the marks; small areas are
+   enlarged 2-3x first. Nothing is sent. Language: `OcrLang` (empty = Windows' first OCR language).
+   Tested 2026-11-21 on a 1080p screen: ~160 ms, good on normal UI text; icons can come out as stray
+   characters and I/l can mix (e.g. "AI" -> "Al"). For tables/tiny text a "Copy exact text (Copilot)"
+   option could come later.
 5. The screen comes back at once, and the pool's **Screen ask Copilot window** opens with the answer.
    Follow-up questions go in that window. The window remembers its place.
 

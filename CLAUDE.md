@@ -26,7 +26,7 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   call words, like Tasks): text in, text out, one-off or kept "conversations". Work account only (personal
   domains refused unless the testing switch is on). Never sends a prompt twice; its log never holds prompt
   or answer text. Protocol at the top of `copilot-pool.ahk`. Companion side: `app\copilot-pool-link.ahk`
-  (`PoolLink*`): starts it (tray > Copilot assist, off by default), and the **💬 buttons** beside the helpers
+  (`PoolLink*`): starts it (tray > Copilot assist, ON by default), and the **💬 buttons** beside the helpers
   (only while the pool is on): the prompt goes to a pool page, which appears as its own Copilot window
   with the answer; you can keep chatting; it returns to the pool when you close it. 🤖, ➤ Ask and ⚡
   auto-assist do NOT use the pool (they paste as before; their overhaul comes later).
@@ -37,7 +37,7 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   Design and plans (live helpers board): `docs\COPILOT-POOL.md`.
 - `app\debug-trace.ahk` (`Dbg*`) - one shared timing trace, `data\debug-trace.log`, written by the Companion,
   the pool and each pool page (ms timestamps; every button click, helper prompts, pool queue/dispatch,
-  page steps with a snapshot of what the page shows). Never prompt/answer/caption text. Tray toggle.
+  page steps with a snapshot of what the page shows). Never prompt/answer/caption text. Off by default (data\debug.ini [Trace] On=1 turns it on); tray toggle.
 - `app\icons\*.ico` - each app's own icon (companion, tasks, pool, updater), drawn by
   `tools\dev\make-icons.ps1`. Every app script starts with `TraySetIcon(...)` and its own
   `SetCurrentProcessExplicitAppUserModelID` (own taskbar button; they all run on the same AutoHotkey32.exe).

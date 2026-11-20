@@ -4,8 +4,8 @@
 ; * The pool is its own app and process, and knows nothing about calls. This
 ;   file only:
 ;     - starts it with the Companion (tray > Copilot assist > "Use the Copilot
-;       pool", per person in live-captions.ini [CopilotPool]; off by default
-;       until it's proven at work - then on by default, see docs\COPILOT-POOL.md)
+;       pool", per person in live-captions.ini [CopilotPool]; ON by default
+;       for everyone; anyone can switch it off there - see docs\COPILOT-POOL.md)
 ;     - the 💬 buttons beside the helpers (shown only while the pool is on):
 ;       PoolLinkAskInWindow sends the prompt, and the pool shows that Copilot
 ;       page as its own window - the answer appears there and you can keep
@@ -57,7 +57,7 @@ PoolLinkInit() {
 }
 
 PoolLinkEnabled() {
-    try return IniRead(MIC_INI, "CopilotPool", "Enabled", "0") = "1"
+    try return IniRead(MIC_INI, "CopilotPool", "Enabled", "1") = "1"
     return false
 }
 

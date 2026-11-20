@@ -6,7 +6,7 @@
 ;   Times are to the millisecond and comparable across both processes.
 ; * NEVER prompt, answer, caption or customer text: only button names, helper names,
 ;   lengths, counts, states and milliseconds.
-; * On by default while we look for problems. Companion tray > "Debug trace (timings)"
+; * OFF by default (on only where data\debug.ini [Trace] On=1). Companion tray > "Debug trace (timings)"
 ;   switches it (data\debug.ini [Trace] On=0/1). Over 5 MB, the file is moved to
 ;   debug-trace.old.log at the Companion's start.
 ; ==============================================================================
@@ -16,12 +16,12 @@ DBG_ITEM := "Debug trace (timings, data\debug-trace.log)"
 DBG_ITEM_OPEN := "Open the debug trace"
 
 DbgOn() {
-    static on := true, at := 0
+    static on := false, at := 0
     if (at = 0 || A_TickCount - at > 2000) {          ; re-read now and then: the other process may switch it
         try {
-            on := IniRead(DBG_INI, "Trace", "On", "1") = "1"
+            on := IniRead(DBG_INI, "Trace", "On", "0") = "1"
         } catch {
-            on := true
+            on := false
         }
         at := A_TickCount
     }

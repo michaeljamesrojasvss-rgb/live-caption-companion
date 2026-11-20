@@ -2,7 +2,7 @@
 
 Status 2026-11-20: proven by `tools\dev\copilot-webview-probe.ahk` at home with a personal Copilot
 account (32-bit AutoHotkey, 2 hidden pages answering in parallel, ~10 s each). **Built:** the pool
-app and the **💬 buttons**. Off by default (tray > Copilot assist > "Use the Copilot pool"), being
+app and the **💬 buttons**. ON by default for everyone (switch it off: tray > Copilot assist > "Use the Copilot pool"), being
 tested at home with a personal account ("Allow personal accounts (testing only)"). Still to prove:
 the work account on the work PC.
 
@@ -56,7 +56,7 @@ Companion (its own process)                 Copilot pool (its own process)
    sign-in data in the page, or the page's labels. If it can't read it, the pool window asks
    ("It's my work account"). **Testing switch:** "Allow personal accounts (testing only)" accepts
    any signed-in account.
-6. **Off by default** for now; **on by default** for workmates once proven at work. Anyone can
+6. **On by default** for everyone (decided 2026-11-20). Anyone can
    turn it off. The choice is in their own `live-captions.ini` [CopilotPool].
 7. **Nothing hard-coded:** address, page counts, waits, personal domains and page selectors are
    settings.

@@ -1,11 +1,15 @@
 ; ==============================================================================
 ; screen-grab.ahk  -  screen capture to a PNG file (prefix Grab*), GDI + GDI+
 ;
-; * GrabMonitors(&vx, &vy, &vw, &vh) - the monitors [{x, y, w, h, primary}] and the virtual screen around them
+; * GrabMonitors(&vx, &vy, &vw, &vh) - the monitors [{index, x, y, w, h, primary, scale}] and the virtual
+;   screen around them (scale = the monitor's scaling, 1.0 = 100%)
 ; * GrabToPng(x, y, w, h, path, maxSide := 0) - copies that screen rectangle into a PNG; maxSide > 0 makes
 ;   the image smaller so its longest side is at most maxSide (the AI shrinks big images anyway)
 ; Works in real screen pixels: the capture runs per-monitor DPI aware (mixed scaling, several monitors).
-; Used by the agent (take_screenshot). Screen ask still has its own copy (SaGrab) - can move here later.
+; * GrabToHBitmap(x, y, w, h) - that screen rectangle as a GDI bitmap in memory (never on disk); the caller
+;   frees it with DllCall("DeleteObject", "Ptr", hbm)
+; Used by the agent (take_screenshot) and the Same value highlighter. Screen ask still has its own copy
+; (SaGrab) - can move here later.
 ; ==============================================================================
 
 GrabMonitors(&vx, &vy, &vw, &vh) {
@@ -16,7 +20,14 @@ GrabMonitors(&vx, &vy, &vw, &vh) {
         prim := MonitorGetPrimary()
         Loop MonitorGetCount() {
             MonitorGet(A_Index, &l, &t, &r, &b)
-            list.Push({x: l, y: t, w: r - l, h: b - t, primary: A_Index = prim})
+            scale := 1.0                         ; the monitor's own scaling (100% = 1.0)
+            try {
+                hmon := DllCall("MonitorFromPoint", "Int64", ((l + 1) & 0xFFFFFFFF) | ((t + 1) << 32), "UInt", 2, "Ptr")
+                dx := 96, dy := 96
+                if !DllCall("shcore\GetDpiForMonitor", "Ptr", hmon, "Int", 0, "UInt*", &dx, "UInt*", &dy)
+                    scale := dx / 96
+            }
+            list.Push({index: A_Index, x: l, y: t, w: r - l, h: b - t, primary: A_Index = prim, scale: scale})
             x0 := Min(x0, l), y0 := Min(y0, t), x1 := Max(x1, r), y1 := Max(y1, b)
         }
     } finally {
@@ -66,6 +77,25 @@ GrabToPng(x, y, w, h, path, maxSide := 0) {
         if hbm
             DllCall("DeleteObject", "Ptr", hbm)
     }
+}
+
+GrabToHBitmap(x, y, w, h) {
+    old := GrabDpiAware()
+    sdc := DllCall("GetDC", "Ptr", 0, "Ptr")
+    mdc := DllCall("CreateCompatibleDC", "Ptr", sdc, "Ptr")
+    hbm := DllCall("CreateCompatibleBitmap", "Ptr", sdc, "Int", w, "Int", h, "Ptr")
+    obm := DllCall("SelectObject", "Ptr", mdc, "Ptr", hbm, "Ptr")
+    ok := hbm && DllCall("BitBlt", "Ptr", mdc, "Int", 0, "Int", 0, "Int", w, "Int", h, "Ptr", sdc, "Int", x, "Int", y, "UInt", 0x40CC0020)  ; SRCCOPY|CAPTUREBLT
+    DllCall("SelectObject", "Ptr", mdc, "Ptr", obm)
+    DllCall("DeleteDC", "Ptr", mdc)
+    DllCall("ReleaseDC", "Ptr", 0, "Ptr", sdc)
+    GrabDpiEnd(old)
+    if !ok {
+        if hbm
+            DllCall("DeleteObject", "Ptr", hbm)
+        throw Error("the screen couldn't be copied")
+    }
+    return hbm
 }
 
 ; A smaller copy of a GDI+ bitmap (high-quality scaling); the caller disposes it

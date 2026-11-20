@@ -70,6 +70,15 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   app and process, generic. **OFF by default** for workmates (tray > Agent > On, `live-captions.ini` [Agent]
   Enabled; ON by default in dev mode); Companion side `app\agent-link.ahk` (`AgtLink*`). Logs never hold the task, replies or results. Screen capture: `app\screen-grab.ahk`
   (`Grab*`). Design + increments (own browser, real MCP servers, Salesforce/PC later): `docs\AGENT.md`.
+- `app\same-value.ahk` (`Sv*`) - Same value highlighter: hold CapsLock (a tap stays CapsLock) -> every monitor
+  captured + Windows OCR -> a see-through, click-through layered window per monitor marks ID-like values:
+  same colour + number = equal, red dashed = almost the same (one edit apart), faint = no twin. Pieces:
+  `same-value-read.ahk` (`SvRead*`, capture in memory + checksum so unchanged monitors reuse their last OCR),
+  `same-value-match.ahk` (`SvMatch*`, PURE words -> marks), `same-value-overlay.ahk` (`SvOv*`, GDI+ +
+  UpdateLayeredWindow, no WebView2). Local only, logs hold counts/times only. Own app and process, OFF by default:
+  Companion tray > Same value highlighter (`same-value-link.ahk`, `SvLink*`, [SameValue] Enabled; "Show now"
+  while off starts it with `/once`). Settings window `same-value-settings.ahk` (`SvSet*`, built from one field
+  list - a new setting = one entry + its default in `SV_DEFAULTS`), saved in `data\same-value.ini`. Design: `docs\SAME-VALUE.md`.
 - `app\webview-guard.ahk` (`Wvg*`) - **memory guard** for every built-in browser (WebView2), used by the Companion,
   the pool and Screen ask. Rule: a WebView2 app must never outlive its users or grow without limit. The pool
   closes itself when no app/window uses it (`NoAppQuitSec`) and the Companion quits it on exit; the pool audits

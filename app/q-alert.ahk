@@ -1,8 +1,9 @@
 ; ==============================================================================
 ; q-alert.ahk  -  "3CX is not logged in to Q" toast for Live Caption Companion
 ;
-;   * q-watch.ahk (its own process) checks the Q icon in 3CX on an interval and
-;     tells us "on" / "off" / "unknown". Only "off" shows a toast.
+;   * q-watch.ahk (its own process) checks 3CX and its Q icon on an interval (on every virtual
+;     desktop) and tells us "on" / "off" / "no3cx" / "unknown". "off" and "no3cx" (3CX not running or
+;     its window closed - it must always be open during work) show a toast.
 ;   * Settings: tray icon > 3CX Q-login alert   (or right-click a toast)
 ;       - alert on / off
 ;       - Toast position (6 screen spots, or next to the 3CX window)
@@ -17,6 +18,7 @@
 ; ==============================================================================
 
 QA_TAG := 0x3CC1
+QA_ITEM_ON := "Alert when 3CX is not open or not logged in to Q"
 QA_POSITIONS := ["Top left", "Top center", "Top right", "Bottom left", "Bottom center", "Bottom right", "Near the 3CX window"]
 QA_DEFAULT_POS := "Bottom right"
 ; key -> [menu title, preset values, unit label, default, min, max]
@@ -67,7 +69,7 @@ QABuildMenu() {
     for p in QA_POSITIONS
         qaPosMenu.Add(p, QAPickPosition)
     m := Menu()
-    m.Add("Alert when 3CX is not logged in to Q", QAToggle)
+    m.Add(QA_ITEM_ON, QAToggle)
     m.Add()
     m.Add("Toast position", qaPosMenu)
     for key in ["ToastSeconds", "MaxToasts", "IntervalSec"]
@@ -100,9 +102,9 @@ QASyncMenu() {
     if !IsObject(qaMenu)
         return
     if (QAlertSetting("Enabled", 1) = "1")
-        qaMenu.Check("Alert when 3CX is not logged in to Q")
+        qaMenu.Check(QA_ITEM_ON)
     else
-        qaMenu.Uncheck("Alert when 3CX is not logged in to Q")
+        qaMenu.Uncheck(QA_ITEM_ON)
     cur := QAlertSetting("Position", QA_DEFAULT_POS)
     for p in QA_POSITIONS {
         if (p = cur)
@@ -192,8 +194,15 @@ QAHandle(text, *) {
         p := StrSplit(text, "`t")
         if (p.Length < 2 || p[1] != "q")
             return
-        if (p[2] = "off" && QAlertSetting("Enabled", 1) = "1")
-            QAShowToast(false)
+        if (QAlertSetting("Enabled", 1) != "1") {
+            QAHideAll()
+            return
+        }
+        if (p[2] = "off")
+            QAShowToast(false, "⚠ 3CX is not logged in to Q")
+        else if (p[2] = "no3cx")                 ; 3CX must always be open during work
+            QAShowToast(false, "⚠ " (p.Length >= 3 && p[3] != "" ? p[3] : "3CX is not open"),
+                "Open 3CX - it must stay on during work.")
         else
             QAHideAll()
     } catch as err {
@@ -202,17 +211,19 @@ QAHandle(text, *) {
 }
 
 ; ------------------------------------------------------------------ toasts (stack, newest at the screen edge)
-QAShowToast(isTest) {
+QAShowToast(isTest, title := "", hint := "Open 3CX and log in to the queue.") {
     s := A_ScreenDPI / 96
     w := Round(330 * s)
     h := Round(64 * s)
+    if (!isTest && StrLen(title) > 34)          ; a longer warning: two lines for the title
+        h := Round(84 * s)
     g := Gui("+AlwaysOnTop -Caption +ToolWindow +Border -DPIScale +E0x08000000", "3CX Q alert")
     g.BackColor := "3B1219"
     g.SetFont("s11 cFECACA", "Segoe UI")
     t := FormatTime(, "h:mm:ss tt")
     txt := g.Add("Text", Format("x{} y{} w{} h{} +0x100", Round(12 * s), Round(10 * s), w - Round(24 * s), h - Round(20 * s))
         , isTest ? "Test toast (" t ")`nClick to close, right-click for settings."
-                 : "⚠ 3CX is not logged in to Q  (" t ")`nOpen 3CX and log in to the queue.")
+                 : title "  (" t ")`n" hint)
     item := Map("gui", g, "w", w, "h", h)
     item["timer"] := QARemoveToast.Bind(item)
     txt.OnEvent("Click", item["timer"])

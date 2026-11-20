@@ -11,7 +11,7 @@ New-Item -ItemType Directory -Force $out | Out-Null
 
 # name, tile colour, glyph (Segoe MDL2 Assets code point)
 $icons = @(
-    @{ Name = "companion"; Color = "#2563EB"; Glyph = 0xE7F0 },   # ClosedCaption - the Companion (captions)
+    @{ Name = "companion"; Color = "#2563EB"; Text = "CC" },      # big bold letters - Caption Companion
     @{ Name = "tasks";     Color = "#16A34A"; Glyph = 0xE73E },   # CheckMark     - Tasks
     @{ Name = "pool";      Color = "#7C3AED"; Glyph = 0xE8BD },   # Message       - Copilot pool
     @{ Name = "updater";   Color = "#475569"; Glyph = 0xE895 }    # Sync          - updater
@@ -29,7 +29,7 @@ function Round-Rect([single]$x, [single]$y, [single]$w, [single]$r) {
     return $p
 }
 
-function Draw-Tile([int]$s, [string]$hex, [int]$glyph) {
+function Draw-Tile([int]$s, [string]$hex, [int]$glyph, [string]$text = "") {
     $bmp = New-Object System.Drawing.Bitmap $s, $s, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = "AntiAlias"; $g.TextRenderingHint = "AntiAliasGridFit"; $g.Clear([System.Drawing.Color]::Transparent)
@@ -50,7 +50,24 @@ function Draw-Tile([int]$s, [string]$hex, [int]$glyph) {
     $in = $ring + $gap
     $tile = Round-Rect $in $in ($s - 2 * $in) ([single]([Math]::Max(2, ($s - 2 * $in) * 0.2)))
     $g.FillPath((New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($hex))), $tile)
-    $font = New-Object System.Drawing.Font "Segoe MDL2 Assets", ([single](($s - 2 * $in) * $(if ($s -le 24) { 0.72 } else { 0.58 }))), ([System.Drawing.GraphicsUnit]::Pixel)
+    if ($text) {
+        # letters as a shape, scaled to fill the tile (bigger share on tiny sizes so they stay readable)
+        $tw = [single]($s - 2 * $in)
+        $p = New-Object System.Drawing.Drawing2D.GraphicsPath
+        $p.AddString($text, (New-Object System.Drawing.FontFamily "Segoe UI"), [int][System.Drawing.FontStyle]::Bold, [single]100,
+            (New-Object System.Drawing.PointF 0, 0), [System.Drawing.StringFormat]::GenericTypographic)
+        $b = $p.GetBounds()
+        $fillW = if ($s -le 24) { 0.94 } else { 0.84 }
+        $k = [Math]::Min($tw * $fillW / $b.Width, $tw * 0.66 / $b.Height)
+        $m = New-Object System.Drawing.Drawing2D.Matrix
+        $m.Translate([single]($in + ($tw - $b.Width * $k) / 2), [single]($in + ($tw - $b.Height * $k) / 2))
+        $m.Scale([single]$k, [single]$k)
+        $m.Translate([single](-$b.X), [single](-$b.Y))
+        $p.Transform($m)
+        $g.FillPath([System.Drawing.Brushes]::White, $p)
+        $g.Dispose(); return $bmp
+    }
+    $font =New-Object System.Drawing.Font "Segoe MDL2 Assets", ([single](($s - 2 * $in) * $(if ($s -le 24) { 0.72 } else { 0.58 }))), ([System.Drawing.GraphicsUnit]::Pixel)
     $fmt = New-Object System.Drawing.StringFormat; $fmt.Alignment = "Center"; $fmt.LineAlignment = "Center"
     $rect = New-Object System.Drawing.RectangleF $in, ([single]($in + ($s - 2 * $in) * 0.03)), ($s - 2 * $in), ($s - 2 * $in)
     $g.DrawString([string][char]$glyph, $font, [System.Drawing.Brushes]::White, $rect, $fmt)
@@ -65,7 +82,7 @@ foreach ($ic in $icons) {
     $pngs = @()
     $x = 4
     foreach ($s in $sizes) {
-        $bmp = Draw-Tile $s $ic.Color $ic.Glyph
+        $bmp = Draw-Tile $s $ic.Color $(if ($ic.Glyph) { $ic.Glyph } else { 0 }) $(if ($ic.Text) { $ic.Text } else { "" })
         $ms = New-Object System.IO.MemoryStream
         $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
         $pngs += , $ms.ToArray()

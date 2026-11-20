@@ -117,7 +117,7 @@ site (e.g. Salesforce, which holds customer records) runs in an AHK WebView:
 | **Shown** (`show`) | One-off, but the page appears as your window and is yours until you close it (💬). |
 | **Kept** (`conversation` = a name) | The first request claims a page and the chat is kept; follow-ups go to the same page, so only the new part is sent. Ends on `end` or after `ConversationIdleMin`. If the page is lost, the next reply says `lost` and the app sends the full context again. |
 
-Kept conversations are for the ➤ Ask / ⚡ overhaul and the live helpers board (below).
+Kept conversations are for the ➤ Ask / ⚡ overhaul and the 💬 windows (auto helpers, below).
 
 ## Messages (WM_COPYDATA, tag `0x3CC3`, JSON text)
 
@@ -186,52 +186,35 @@ fixed with a small data file instead of a release.
 
 1. **Work PC:** sign in with the work account (Conditional Access), check the account is read as work.
 2. **➤ Ask / ⚡ auto-assist overhaul** (later, owner's call): likely kept conversations per call.
-3. **Live helpers board** (below).
+3. **Auto helpers** in their own 💬 windows (below) - testing.
 4. The extension's other features (Outlook buttons, WO checker), then retiring the extension.
 
-## Auto helpers (built 2026-11-20, being tested - `app\auto-helpers.ahk`, prefix `Auto*`)
+## Auto helpers (`app\auto-helpers.ahk`, prefix `Auto*`)
 
-From the owner. Some helpers are marked **auto**. During a live call each one runs by itself, in
-its own Copilot page, and you just watch the answers.
+Redesigned 2026-11-20 (owner): the combined "Live helpers" board window and its hidden pages are
+**gone**. You open and arrange each helper's 💬 window yourself; auto helpers just follow up in them.
 
-- **Choosing them:** right-click a helper button (or its 🤖 / 💬) > "Auto-run during calls" (a
-  tick). Saved per person in `live-captions.ini` [AutoHelpers] `Ids=` (not in the shared helpers
-  file). Auto helpers show **⟳** before their name.
-- **Started by:** a new call record - the New call button or a 3CX ring (owner's choice), not
-  when the Companion starts.
-- **Shown in:** one **Live helpers** window (the pool's "board"), side by side up to
-  `BoardColumns` (3), then one at a time with a tab button each. Each page has a header with the
-  helper's name and its status (writing / answered at ...). Tray > Copilot assist > "Live helpers
-  window", or right-click a helper > "Open the Live helpers window". It appears by itself (without
-  taking focus) when a call starts.
-- **Settings:** `[AutoHelpers]` `MinChars` (40), `QuietMs` (1200), `MinGapMs` (8000),
-  `FollowUpPrompt` (`{{new}}` = the new customer text and changed verified info).
-- **Their own pages:** auto helpers get **dedicated pages**, separate from the 💬 pages (4 regular
-  + 2 auto helpers = 6 pages). They are opened ahead of time when the Companion starts (warm), so
-  a call starts instantly.
-- **Call starts** (a new live call record): each auto helper's page gets a fresh chat and its full
-  prompt (helper instructions + reference context + caller info + transcript so far + verified
-  info), like 🤖 builds today.
-- **As the customer talks:** when the customer pauses, only the **new** customer text (and changed
-  verified info / notes) is sent as a follow-up into the same chat. Same timing rules as ⚡ today
-  (`MinChars`, `QuietMs`, `MinGapMs`), as settings. If Copilot is still writing, the new text waits
-  and goes as **one** combined follow-up when it finishes (never a pile-up).
-- **Watching:** the auto pages are shown in **one "Live helpers" window**, side by side (tabs
-  when there are many), each page **auto-scrolling** to the newest answer. You can still type into
-  any of them.
-- **Call ends / next call:** the conversations end; the pages keep showing the last answers until
-  the next call starts, then get a fresh chat.
-- **Safety:** same as the pool: work account only, never sends twice, nothing in logs. Only while
-  the pool is on, and only for **live** calls (not when reviewing an old call).
-- **In the pool (generic):** `board {title, pages:[{key,label}]}` opens one dedicated page per key
-  (closing the ones no longer wanted), `boardshow {activate}` shows the window, and an `ask` with
-  `page: <key>` goes only to that page (`newChat` 1 = fresh chat + full prompt, 0 = follow-up in
-  the same chat). If the page reloaded, a follow-up gets `lost` and the Companion sends everything
-  again. Board pages auto-scroll (`scroll`), and a follow-up never overwrites what you're typing
-  there (`respectDraft`: it comes back unsent and is tried again later).
-- **Watch for:** memory (each page ~150-300 MB), Copilot's own usage limits with many helpers,
-  very long calls outgrowing a chat (re-send a summary).
-- ⚡ auto-assist and ➤ Ask stay as they are until this is proven; then they can be retired or folded in.
+- **Choosing them:** right-click a helper button > "Auto-run during calls (opens its 💬 window at
+  each new call)". Saved per person in `live-captions.ini` [AutoHelpers] `Ids=`. Auto helpers show **⟳**.
+- **Only in its own 💬 window:** nothing is sent while the window is closed. No extra pages.
+- **New call** (New call button / 3CX ring): each auto helper **opens its 💬 window by itself**
+  (its remembered place and size, without taking the focus - ask flag `quiet`) with a fresh chat and
+  its full prompt. A window that's already open gets the same fresh chat + full prompt. Close one
+  during the call and it stays closed until the next call (💬 opens it again). Windows of helpers
+  that aren't auto-run are left alone until you click 💬 or ^ (^ on an older call's chat also
+  starts a fresh chat with the full prompt).
+- **As the customer talks:** when the customer pauses, a follow-up with the **new words** (and the
+  verified info once you stop typing it) - exactly what ^ sends. Live Captions polishing words it
+  already showed is not sent. One prompt at a time per window (the next waits until the previous is
+  in Copilot).
+- **Shared memory:** 💬, ^ and auto all record what the window has seen (`poolLinkHelperSeen`:
+  text, notes, call), so nothing is sent twice whichever button sent last.
+- **Your typing wins:** auto prompts carry `respectDraft`; if you have text in that window's input
+  box, the prompt comes back unsent and is tried again a few seconds later.
+- **Settings:** `[AutoHelpers]` `MinChars` (1), `QuietMs` (1200), `MinGapMs` (0), `FollowUpPrompt`
+  (`{{new}}` = the new customer text and changed verified info).
+- **Safety:** same as the pool: work account only, never sends twice, nothing in logs; only while
+  the pool is ready, only for the live call.
 
 ## Decisions (owner, 2026-11-20)
 

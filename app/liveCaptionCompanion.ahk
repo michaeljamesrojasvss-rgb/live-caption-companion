@@ -26,15 +26,19 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 ; State
 ; ==============================================================================
 class CaptionLine {
+    static count := 0
     __New(text) {
         this.Text := text
+        this.No := ++CaptionLine.count       ; for the debug trace ("line #12"), never saved
+        this.Tick := A_TickCount             ; when it first showed
     }
 }
 
 captionEl := ""
 lastCaption := ""
 snapshotLines := []
-snapshotMap := []          ; parallel array of [CaptionLine, prefixLength]
+snapshotMap := []          ; parallel array of [CaptionLine, owner]: owner = the start of that Live Captions
+                           ; line that belongs to an earlier line / the time before the call ("" = none)
 sessionLines := []
 bubbles := []              ; each bubble is an array of CaptionLine
 activeBubble := ""
@@ -72,7 +76,8 @@ helpersVisible := false    ; accordion open/closed
 helperPanelBuilt := false  ; controls created on myGui yet?
 helperButtons := []
 helperMiniButtons := []    ; small icon buttons beside each helper (Copilot submit)
-helperPoolButtons := []    ; 💬 beside each helper: ask the Copilot pool (only while it's on)
+helperPoolButtons := []    ; 💬 beside each helper: its own Copilot window from the pool (only while it's on)
+helperFollowButtons := []  ; ^ beside 💬: follow-up into that window with what's new (orange = window open)
 hStatusLine := ""
 hNone := ""
 hPreviewStatus := ""
@@ -533,20 +538,25 @@ ProcessSnapshot(lines) {
             line := CaptionLine(text)
             sessionLines.Push(line)
             bubble.Push(line)
-            snapshotMap.Push([line, 0])
+            snapshotMap.Push([line, ""])
             snapshotLines.Push(text)
         }
         activeBubble := bubble
         lastChatTick := now
+        CapTrace("first captions: " lines.Length " line(s), from line #" bubble[1].No)
         return
     }
 
     isNewTurn := (now - lastChatTick) >= NEW_TURN_MS
 
+    ; Live Captions shows a window of lines that scrolls up as people talk. A line at the top
+    ; that was also at the bottom before = it scrolled (lines can be polished meanwhile).
     overlap := FindSuffixPrefixOverlap(snapshotLines, lines)
     hasRollingWindow := overlap > 0
         && overlap < Min(snapshotLines.Length, lines.Length)
-        && lines.Length <= snapshotLines.Length
+        && (lines.Length <= snapshotLines.Length || !CapLineSame(snapshotLines[1], lines[1]))
+    if hasRollingWindow
+        CapTrace("window scrolled by " (snapshotLines.Length - overlap) " line(s) (" snapshotLines.Length " -> " lines.Length " lines)")
 
     currentMap := []
     sharedCount := hasRollingWindow ? overlap : Min(lines.Length, snapshotLines.Length)
@@ -558,48 +568,56 @@ ProcessSnapshot(lines) {
         previousLine := snapshotLines[oldIndex + 1]
         pair := snapshotMap[oldIndex + 1]
         entry := pair[1]
-        prefixLength := pair[2]
-        currentMap.Push([entry, prefixLength])
+        owner := pair[2]
+        currentMap.Push([entry, owner])
         cur := lines[index + 1]
 
         if (cur == previousLine)
             continue
 
-        if baseline.Has(entry) {
-            commonPrefix := CommonPrefixLength(previousLine, cur)
-            newTail := Trim(SubStr(cur, commonPrefix + 1))
-            if (newTail != "") {
+        ; Where the new words start ("" how = added at the end / corrected / corrected+added /
+        ; unaligned). Live Captions often rewrites a line it already showed - punctuation, capitals,
+        ; "twenty three forty five ... road" -> "2345 ... Rd." - even many seconds later. Only
+        ; words added at the end are new speech; a rewrite updates the words we already have.
+        how := ""
+        at := CaptionNewAt(previousLine, cur, &how)
+
+        if baseline.Has(entry) {                 ; a line from before the call / a removed bubble
+            if at {
                 if (!IsObject(activeBubble) || isNewTurn) {
                     activeBubble := []
                     bubbles.Push(activeBubble)
                 }
-                tailEntry := CaptionLine(newTail)
+                tailEntry := CaptionLine(Trim(SubStr(cur, at)))
                 sessionLines.Push(tailEntry)
                 activeBubble.Push(tailEntry)
                 baseline.Delete(entry)
-                currentMap[index + 1] := [tailEntry, commonPrefix]
+                currentMap[index + 1] := [tailEntry, SubStr(cur, 1, at - 1)]
+                CapTrace("a line from before the call got new words (" how ", " CapWords(tailEntry.Text).Length
+                    " words) -> line #" tailEntry.No)
             } else {
-                currentMap[index + 1] := [entry, StrLen(cur)]
+                CapTrace("a line from before the call was rewritten (" how ") - ignored, no new words")
             }
             continue
         }
 
-        if (isNewTurn && lines.Length <= snapshotLines.Length && index = sharedCount - 1) {
-            commonPrefix := CommonPrefixLength(previousLine, cur)
-            newTail := Trim(SubStr(cur, commonPrefix + 1))
-            if (newTail != "") {
-                bubble := []
-                bubbles.Push(bubble)
-                tailEntry := CaptionLine(newTail)
-                sessionLines.Push(tailEntry)
-                bubble.Push(tailEntry)
-                currentMap[index + 1] := [tailEntry, commonPrefix]
-                activeBubble := bubble
-            } else {
-                entry.Text := Trim(SubStr(cur, prefixLength + 1))
-            }
+        if (isNewTurn && at && how != "unaligned" && lines.Length <= snapshotLines.Length && index = sharedCount - 1) {
+            ; After a pause, the same line went on: a new bubble with only the new words
+            CapSetOwned(entry, owner, SubStr(cur, 1, at - 1))       ; its earlier words may have been polished
+            bubble := []
+            bubbles.Push(bubble)
+            tailEntry := CaptionLine(Trim(SubStr(cur, at)))
+            sessionLines.Push(tailEntry)
+            bubble.Push(tailEntry)
+            currentMap[index + 1] := [tailEntry, SubStr(cur, 1, at - 1)]
+            activeBubble := bubble
+            CapTrace("after a pause the last line went on (" how ") -> new bubble, line #" tailEntry.No
+                " (" CapWords(tailEntry.Text).Length " words)")
         } else {
-            entry.Text := Trim(SubStr(cur, prefixLength + 1))
+            currentMap[index + 1] := [entry, CapSetOwned(entry, owner, cur)]
+            if (how != "added")
+                CapTrace("line #" entry.No " corrected in place (" how ") " Round((now - entry.Tick) / 1000, 1)
+                    " s after it first showed" (isNewTurn ? ", after a pause" : ""))
         }
     }
 
@@ -613,7 +631,9 @@ ProcessSnapshot(lines) {
         entry := CaptionLine(lines[index + 1])
         sessionLines.Push(entry)
         activeBubble.Push(entry)
-        currentMap.Push([entry, 0])
+        currentMap.Push([entry, ""])
+        CapTrace("new line #" entry.No " (" CapWords(entry.Text).Length " words)"
+            (isNewTurn && index = firstNewIndex ? ", new bubble after a pause" : ""))
     }
 
     snapshotLines := lines.Clone()
@@ -626,7 +646,7 @@ FindSuffixPrefixOverlap(previous, cur) {
     while (count > 0) {
         matches := true
         Loop count {
-            if (previous[previous.Length - count + A_Index] !== cur[A_Index]) {
+            if !CapLineSame(previous[previous.Length - count + A_Index], cur[A_Index]) {
                 matches := false
                 break
             }
@@ -636,6 +656,131 @@ FindSuffixPrefixOverlap(previous, cur) {
         count -= 1
     }
     return 0
+}
+
+; ---- Live Captions rewrites (prefix Cap*) ----
+; Caption trace: what happened to the lines, never their words
+CapTrace(msg) {
+    try DbgTrace("caption", msg)
+}
+
+; The real words of a caption line: [{pos, norm}] - where each starts, and the word in lower
+; case without punctuation ("Rd." -> "rd"). Punctuation-only bits are left out.
+CapWords(s) {
+    out := [], p := 1
+    while (p := RegExMatch(s, "\S+", &m, p)) {
+        w := StrLower(RegExReplace(m[0], "[\p{P}\p{S}]+"))
+        if (w != "")
+            out.Push({pos: p, norm: w})
+        p += StrLen(m[0])
+    }
+    return out
+}
+
+; Where the first real word at or after `from` starts (0 = only spaces / punctuation left)
+CapWordAt(s, from) {
+    p := from
+    while (p := RegExMatch(s, "\S+", &m, p)) {
+        if (RegExReplace(m[0], "[\p{P}\p{S}]+") != "")
+            return p
+        p += StrLen(m[0])
+    }
+    return 0
+}
+
+; Same word, allowing Live Captions' polishing: "pass" -> "password", "road" -> "rd", "street" -> "st"
+CapWordSame(a, b) {
+    if (a = "" || b = "")
+        return false
+    if (a == b)
+        return true
+    s := StrLen(a) <= StrLen(b) ? a : b
+    l := (s == a) ? b : a
+    if (StrLen(s) >= 3 && SubStr(l, 1, StrLen(s)) == s)
+        return true
+    if (StrLen(s) >= 2 && StrLen(l) <= 10 && SubStr(s, 1, 1) == SubStr(l, 1, 1)) {   ; an abbreviation
+        i := 1
+        Loop Parse l {
+            if (i <= StrLen(s) && A_LoopField == SubStr(s, i, 1))
+                i += 1
+        }
+        return i > StrLen(s)
+    }
+    return false
+}
+
+; Same Live Captions line, maybe polished since (used to tell that the window scrolled)
+CapLineSame(a, b) {
+    if (a == b)
+        return true
+    wa := CapWords(a), wb := CapWords(b)             ; (not A/B: AutoHotkey names ignore case)
+    if (wa.Length < 3 || wb.Length < 3)              ; short lines must match exactly
+        return false
+    if (SubStr(b, 1, StrLen(a)) == a || SubStr(a, 1, StrLen(b)) == b)   ; it only grew
+        return true
+    hit := 0, used := Map()
+    for x in wa {
+        for j, y in wb {
+            if (!used.Has(j) && CapWordSame(x.norm, y.norm)) {
+                used[j] := true
+                hit += 1
+                break
+            }
+        }
+    }
+    return 2 * hit / (wa.Length + wb.Length) >= 0.6
+}
+
+; Where the new words in `cur` start, compared with what the line was (`prev`); 0 = no new
+; words (unchanged, or only polished). how: added (words added at the end) / corrected (only
+; polished) / corrected+added / unaligned (rewritten too much to line up; a guess)
+CaptionNewAt(prev, cur, &how := "") {
+    how := "added"
+    if (prev = "")
+        return CapWordAt(cur, 1)
+    if (SubStr(cur, 1, StrLen(prev)) == prev)        ; the usual case: it only grew
+        return CapWordAt(cur, StrLen(prev) + 1)
+    P := CapWords(prev), C := CapWords(cur), np := P.Length
+    if (np = 0)
+        return C.Length ? C[1].pos : 0
+    ; Find where the line used to end: its last word (with the word before it) in the new
+    ; line, nearest to where it was. Its last 1-2 words may have been corrected too.
+    Loop Min(3, np) {
+        k := A_Index - 1                             ; how many of its last words were corrected
+        e := np - k
+        best := 0
+        for j, w in C {
+            if !CapWordSame(P[e].norm, w.norm)
+                continue
+            if (e > 1 && !(j > 1 && CapWordSame(P[e - 1].norm, C[j - 1].norm)))
+                continue
+            if (!best || Abs(j - e) < Abs(best - e))
+                best := j
+        }
+        if best {
+            n := best + 1 + k                        ; skip the words that replaced the corrected ones
+            how := (n <= C.Length) ? "corrected+added" : "corrected"
+            return (n <= C.Length) ? C[n].pos : 0
+        }
+    }
+    how := "unaligned"
+    extra := C.Length - np                           ; clearly longer: the extra words at the end are new
+    return (extra >= 2) ? C[C.Length - extra + 1].pos : 0
+}
+
+; Updates a caption line's text from the Live Captions line it came from; `owner` is the start of
+; that line that belongs to an earlier line. Returns the (re-found) owner part.
+CapSetOwned(entry, owner, line) {
+    if (owner = "") {
+        entry.Text := Trim(line)
+        return ""
+    }
+    at := CaptionNewAt(owner, line)
+    if at {
+        entry.Text := Trim(SubStr(line, at))
+        return SubStr(line, 1, at - 1)
+    }
+    return owner                                     ; can't tell its own words apart: keep them as they were
 }
 
 CommonPrefixLength(a, b) {
@@ -929,7 +1074,7 @@ SeedCaptionBaseline(caption) {
         snapshotLines.Push(line)
         bl := CaptionLine("")
         baseline[bl] := true
-        snapshotMap.Push([bl, StrLen(line)])
+        snapshotMap.Push([bl, line])
     }
     if (snapshotLines.Length > 0)
         lastChatTick := A_TickCount
@@ -1199,6 +1344,8 @@ ShowHideHelperControls(vis) {
     poolVis := vis && PoolLinkEnabled()
     Loop Min(helperActions.Length, helperPoolButtons.Length)
         helperPoolButtons[A_Index].Visible := poolVis
+    Loop Min(helperActions.Length, helperFollowButtons.Length)
+        helperFollowButtons[A_Index].Visible := poolVis
 }
 
 RebuildHelperButtons(info := "") {
@@ -1209,7 +1356,7 @@ RebuildHelperButtons(info := "") {
 }
 
 RebuildHelperButtonsCore(info := "") {
-    global helperButtons, helperMiniButtons, helperPoolButtons
+    global helperButtons, helperMiniButtons, helperPoolButtons, helperFollowButtons
 
     EnsureHelperPanel()
     poolOn := PoolLinkEnabled()
@@ -1243,14 +1390,22 @@ RebuildHelperButtonsCore(info := "") {
             helperMiniButtons.Push(mini)
         }
         helperMiniButtons[i].Visible := helpersVisible
-        ; 💬 — ask the Copilot pool (answer in its own Copilot window); only while the pool is on
+        ; 💬 — the helper's own Copilot window (from the pool); ^ — follow-up into it. Only while the
+        ; pool is on. Text controls drawn as buttons, so they can turn orange while the window is open.
         if (i > helperPoolButtons.Length) {
-            pb := myGui.Add("Button", "x0 y0 w30 h30 Hidden", "💬")
+            pb := myGui.Add("Text", "x0 y0 w30 h30 Hidden +0x200 Center +Border BackgroundE5E7EB c111827", "💬")
             pb.OnEvent("Click", HelperPoolAt.Bind(i))
             pb.OnEvent("ContextMenu", HelperMenuAt.Bind(i))
             helperPoolButtons.Push(pb)
         }
         helperPoolButtons[i].Visible := helpersVisible && poolOn
+        if (i > helperFollowButtons.Length) {
+            fb := myGui.Add("Text", "x0 y0 w22 h30 Hidden +0x200 Center +Border BackgroundE5E7EB c111827", "^")
+            fb.OnEvent("Click", HelperFollowAt.Bind(i))
+            fb.OnEvent("ContextMenu", HelperMenuAt.Bind(i))
+            helperFollowButtons.Push(fb)
+        }
+        helperFollowButtons[i].Visible := helpersVisible && poolOn
     }
     Loop helperButtons.Length - n
         helperButtons[n + A_Index].Visible := false
@@ -1258,6 +1413,9 @@ RebuildHelperButtonsCore(info := "") {
         helperMiniButtons[n + A_Index].Visible := false
     Loop helperPoolButtons.Length - n
         helperPoolButtons[n + A_Index].Visible := false
+    Loop helperFollowButtons.Length - n
+        helperFollowButtons[n + A_Index].Visible := false
+    try PoolLinkPaintHelpers()                 ; orange = that helper's Copilot window is open
 
     hNone.Visible := (helpersVisible && n = 0)
     if (info != "")
@@ -1277,7 +1435,7 @@ HelperClickedAt(i, *) {
     }
 }
 
-; Right-click on a helper's buttons: auto-run during calls, open the Live helpers window
+; Right-click on a helper's buttons: auto-run during calls (in its own 💬 window)
 HelperMenuAt(i, *) {
     if (i <= helperActions.Length) {
         try DbgTrace("click", "right-click on helper '" Trim(helperActions[i]["label"]) "'")
@@ -1291,7 +1449,15 @@ HelperPoolAt(i, *) {
         t := A_TickCount
         HelperClicked(helperActions[i])
         DbgHelper("💬 pool", i, t)
-        PoolLinkAskInWindow(lastCopiedPrompt, Trim(helperActions[i]["label"]))
+        PoolLinkAskInWindow(lastCopiedPrompt, Trim(helperActions[i]["label"]), Trim(helperActions[i]["id"]))
+    }
+}
+
+; ^ button: a follow-up into that helper's Copilot window - what the customer said since it last sent
+HelperFollowAt(i, *) {
+    if (i <= helperActions.Length) {
+        try DbgTrace("click", "^ follow-up on helper '" Trim(helperActions[i]["label"]) "'")
+        PoolLinkFollowUp(helperActions[i])
     }
 }
 
@@ -1345,12 +1511,13 @@ LayoutHelperPanel(width, height, measure := false) {
         x    := margin
         rowH := 36
         miniW := 30
+        followW := 22                       ; the ^ button
         Loop n {
             btn := helperButtons[A_Index]
             btn.GetPos(, , &bw)
             pairW := bw + 2 + miniW  ; main + gap + mini icon
             if (A_Index <= np)
-                pairW += 2 + miniW   ; + 💬
+                pairW += 2 + miniW + 1 + followW   ; + 💬 + ^
             if (x > margin && x + pairW > width - margin) {
                 x := margin
                 y += rowH
@@ -1359,8 +1526,11 @@ LayoutHelperPanel(width, height, measure := false) {
                 btn.Move(x, y)
                 if (A_Index <= nm)
                     helperMiniButtons[A_Index].Move(x + bw + 2, y, miniW)
-                if (A_Index <= np)
-                    helperPoolButtons[A_Index].Move(x + bw + 2 + miniW + 2, y, miniW)
+                if (A_Index <= np) {
+                    helperPoolButtons[A_Index].Move(x + bw + 2 + miniW + 2, y, miniW, 30)
+                    if (A_Index <= helperFollowButtons.Length)
+                        helperFollowButtons[A_Index].Move(x + bw + 2 + miniW + 2 + miniW + 1, y, followW, 30)
+                }
             }
             x += pairW + 7
         }

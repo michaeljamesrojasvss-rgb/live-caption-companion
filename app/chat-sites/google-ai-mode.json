@@ -1,0 +1,21 @@
+{
+  "id": "google-ai-mode",
+  "name": "Google AI Mode (dev testing)",
+  "about": "For testing the pool while developing only - no sign-in needed. Never available in installed copies.",
+  "devOnly": true,
+  "address": "https://www.google.com/search?udm=50",
+  "hosts": ["google.com"],
+  "signInHosts": "(^|[.])accounts[.]google[.]com$",
+  "signOutUrl": "",
+  "account": "none",
+  "warmUp": false,
+  "newChat": "navigate",
+  "answer": "settle",
+  "settleMs": 3000,
+  "minAnswerMs": 4000,
+  "stopByLabel": false,
+  "selectors": {
+    "editor": ["textarea:not([name=\"q\"])", "[contenteditable=\"true\"][role=\"textbox\"]", "textarea"],
+    "answerArea": ["[role=\"main\"]", "#rcnt", "body"]
+  }
+}

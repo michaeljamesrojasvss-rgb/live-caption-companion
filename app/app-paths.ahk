@@ -52,3 +52,13 @@ AppParentDir(path) {
 AppIsInstalled() {
     return FileExist(APP_ROOT "\install.ini") ? true : false
 }
+
+; Dev mode: your git working copy (a .git folder, not installed by Setup). Test-only things (e.g. the
+; pool's dev-only chat sites) exist only here. data\live-captions.ini [Dev] On=0 makes the repo behave
+; like an installed copy, to try the real thing.
+AppIsDev() {
+    if (AppIsInstalled() || !DirExist(APP_ROOT "\.git"))
+        return false
+    try return IniRead(DATA_DIR "\live-captions.ini", "Dev", "On", "1") != "0"
+    return true
+}

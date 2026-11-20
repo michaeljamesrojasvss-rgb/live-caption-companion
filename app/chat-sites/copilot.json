@@ -1,0 +1,26 @@
+{
+  "id": "copilot",
+  "name": "Copilot",
+  "about": "Microsoft 365 Copilot (work account). The site everyone uses.",
+  "devOnly": false,
+  "address": "https://m365.cloud.microsoft/chat",
+  "hosts": ["m365.cloud.microsoft", "copilot.cloud.microsoft"],
+  "signInHosts": "(^|[.])(login[.]|account[.]|signup[.])|microsoftonline|live[.]com$",
+  "signOutUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/logout",
+  "personalSignOutUrl": "https://login.live.com/logout.srf",
+  "account": "work",
+  "warmUp": true,
+  "newChat": "link",
+  "answer": "copy-button",
+  "selectors": {
+    "editor": ["[data-lexical-editor=\"true\"][contenteditable=\"true\"]", "span[role=\"textbox\"][contenteditable=\"true\"]"],
+    "question": ["[data-testid=\"chatQuestion\"]"],
+    "message": ["[data-testid=\"copilot-message-div\"]"],
+    "messageBusy": [".fai-CopilotMessage"],
+    "copyButton": ["[data-testid=\"CopyButtonTestId\"]"],
+    "reply": ["[data-testid=\"markdown-reply\"]"],
+    "inputBox": [".fai-BebopLiteChatInput"],
+    "attachments": [".fai-BebopLiteChatInput__attachments"],
+    "newChat": ["a[aria-label=\"New chat\"]"]
+  }
+}

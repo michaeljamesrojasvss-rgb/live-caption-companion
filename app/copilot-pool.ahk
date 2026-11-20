@@ -18,7 +18,11 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 ;   copilot-pool-worker.js. One sign-in, shared by all of them, kept in
 ;   %LOCALAPPDATA%\CaptionCompanion\copilot-pool-web (never a synced folder).
 ;   "Sign out" in the window forgets it.
-; * Safety: pages load over https only; only Copilot's own pages (AllowedHosts)
+; * Chat sites: Copilot by default. What differs per site (address, hosts, sign-in, selectors, how a new
+;   chat starts, how an answer is known to be done) is in app\chat-sites\<id>.json - see its README.
+;   Dev-only sites (Google AI Mode, for testing without Copilot) load only in dev mode (AppIsDev:
+;   a git working copy); the pool window then has a "Chat site" list. Each site has its own sign-in.
+; * Safety: pages load over https only; only the site's own pages (its "hosts")
 ;   can send messages to the pool; links open in your normal browser; no
 ;   developer tools; no debugging port is opened (the DevTools protocol is used
 ;   in-process only, for typing without focus).
@@ -29,6 +33,14 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 ;   chatting. That page is yours until you close the window; then it gets a
 ;   fresh chat and goes back to the pool. Another page opens meanwhile (up to
 ;   MaxViews) so the next request doesn't wait.
+;   With a "conversation" name too (the Companion: one per helper), later
+;   requests with that name go to the same window and chat, and the window
+;   remembers its own place and size. Closing it ends the conversation. The
+;   open ones are listed in every "state" message (windows).
+; * One sign-in for all pages: a page that lands on the sign-in page (you
+;   signed out in a Copilot window) reloads every page; signing in on one
+;   reloads the pages still waiting for it. "Sign out" switches to a new,
+;   empty sign-in folder, so nothing from the old sign-in is reused.
 ; * Work account only: requests are refused while a personal account (gmail.com,
 ;   outlook.com, ... - see PersonalDomains) is signed in, unless "Allow personal
 ;   accounts (testing only)" is ticked.
@@ -37,21 +49,21 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 ; * One copy only. Arguments: /background, /show, /signin, /restart.
 ;
 ; Messages (WM_COPYDATA, tag POOL_TAG, JSON text):
-;   app -> pool  {t:"ask", id, hwnd, prompt, label, conversation, newChat, stream, show}
+;   app -> pool  {t:"ask", id, hwnd, prompt, label, conversation, newChat, stream, show, orNew, respectDraft, quiet}
+;                (quiet: with show - the window opens without taking the focus)
+;                (orNew: a follow-up that may start the conversation again if it's gone - it carries the full prompt)
+;                (respectDraft: an automatic prompt - if text was typed by hand into the page's box, it comes back unsent)
 ;                {t:"cancel", id}   {t:"end", conversation}   {t:"status", hwnd}
 ;                {t:"show"}   {t:"signin"}   {t:"quit"}
 ;   pool -> app  {t:"queued", id, position}   {t:"sent", id}   {t:"chunk", id, text}
 ;                {t:"done", id, ok, kind, text, markdown, error, ms}
-;                {t:"state", state, reason, views, ready, free, queued, account, accountKind}
+;                {t:"state", state, reason, views, ready, free, queued, account, accountKind, windows:[conversation names]}
 ;   state: off | starting | signin | account | ready
 ;   kind (when ok=0): unsent (never reached Copilot - safe to try another way),
 ;     off / starting / signin / account / busy (same: never reached Copilot),
 ;     lost (that conversation is gone - send the full context again),
-;     replaced (a board page got a newer prompt: this one was dropped, or its answer stopped),
+;     replaced (a warm-up message was dropped for a real request),
 ;     failed / timeout / cancelled (may have reached Copilot - do NOT resend)
-; Board pages ("page"): the newest prompt always wins. If the page is busy, its job stops (Copilot's
-; answer too), the input box is cleared and the new prompt goes right away. Only exception: a
-; follow-up waits until the full prompt before it is in (a few seconds), so no context is lost.
 ; Warm-up: each freshly loaded page sends WarmUpPrompt once (Copilot is slow on a page's first
 ; message only); any real request replaces a warm-up at once.
 ; ==============================================================================
@@ -63,15 +75,19 @@ POOL_LOG := DATA_DIR "\copilot-pool.log"
 ; that OneDrive could sync. Encrypted by WebView2 for this Windows account.
 POOL_WEB := EnvGet("LOCALAPPDATA") "\CaptionCompanion\copilot-pool-web"
 POOL_WEB_OLD := DATA_DIR "\copilot-pool"           ; where early test versions kept it (removed at start)
-POOL_SIGNOUT_URL := "https://login.microsoftonline.com/common/oauth2/v2.0/logout"   ; Microsoft's work/school sign-out
-POOL_SEL_FILE := DATA_DIR "\copilot-pool-selectors.json"
 POOL_WORKER := A_ScriptDir "\copilot-pool-worker.js"
+; The chat sites the pool can drive: one JSON file each (see chat-sites\README.md). Copilot is the real
+; one; dev-only sites (e.g. Google AI Mode, for testing without Copilot) load only in dev mode.
+POOL_SITES_DIRS := [A_ScriptDir "\chat-sites", DATA_DIR "\chat-sites"]   ; data\ overrides app\ (same id)
+POOL_DEV := AppIsDev()
 POOL_CONSUMER_TENANT :="9188040d-6c67-4c5b-b112-36a304b66dad"   ; Microsoft's tenant for personal accounts
 POOL_DEFAULTS := Map(
-    "Address", "https://m365.cloud.microsoft/chat",
-    "SingleSignOn", 1,
-    "Views", 2,
-    "MaxViews", 4,
+    "Site", "copilot",             ; which chat site (a file in chat-sites\)
+    ; 0 = never signs in by itself with the Windows account: you sign in once in the pool's own window,
+    ; and after "Sign out" nothing is reused (a brand-new, empty sign-in folder)
+    "SingleSignOn", 0,
+    "Views", 1,                    ; pages kept ready (a spare); each helper's 💬 window takes one
+    "MaxViews", 8,                 ; most pages at once (helper windows + the spare)
     "SendWaitSec", 15,             ; Copilot takes 5-7 s to register Send
     "AnswerTimeoutSec", 180,
     "QueueWaitSec", 45,            ; a request that can't start this soon is handed back (unsent)
@@ -82,10 +98,8 @@ POOL_DEFAULTS := Map(
     ; So each page sends this short message by itself once it has loaded, then starts a new chat.
     "WarmUp", 1,
     "WarmUpPrompt", "Connection check - please reply with just: OK",
-    "AllowedHosts", "m365.cloud.microsoft, copilot.cloud.microsoft",
     "PersonalDomains", "gmail.com, googlemail.com, outlook.com, hotmail.com, live.com, msn.com, passport.com, yahoo.com, ymail.com, rocketmail.com, icloud.com, me.com, mac.com, aol.com, proton.me, protonmail.com, gmx.com, gmx.net, mail.com, yandex.com, zoho.com",
     "AllowPersonal", 0,
-    "BoardColumns", 3,             ; board pages side by side up to this many, then one at a time (tabs)
     "ChatW", 900,                  ; size of a 💬 Copilot window (remembered when you close one)
     "ChatH", 760,
     "WorkConfirmed", "")           ; "unknown" = the user confirmed an account we couldn't read is the work one
@@ -97,21 +111,45 @@ poolArgs := ""
 for a in A_Args
     poolArgs .= " " a
 
-if InStr(poolArgs, "/restart") {
-    Loop 50 {
-        if !WinExist(POOL_TITLE " ahk_class AutoHotkeyGUI")
+; One copy only - a named mutex, so two copies started at the same moment can't both run (they did:
+; two pools on one sign-in folder, every page twice, and a sign-out that couldn't delete the folder).
+; /restart waits for the old copy to end (and ends it if it hangs).
+poolMutex := PoolTakeMutex()
+if (!poolMutex && InStr(poolArgs, "/restart")) {
+    Loop 150 {                                  ; up to ~15 s
+        Sleep(100)
+        if (poolMutex := PoolTakeMutex())
+            break
+        if (A_Index = 80) {                     ; 8 s and the old copy is still there: end it
+            try ProcessClose(WinGetPID(POOL_TITLE " ahk_class AutoHotkeyGUI"))
+        }
+    }
+}
+if !poolMutex {
+    other := 0
+    Loop 30 {                                   ; the other copy may still be building its window
+        if (other := WinExist(POOL_TITLE " ahk_class AutoHotkeyGUI"))
             break
         Sleep(100)
     }
-}
-if (other := WinExist(POOL_TITLE " ahk_class AutoHotkeyGUI")) {
-    if InStr(poolArgs, "/signout")
-        PoolSendTo(other, Map("t", "signout"))
-    else if InStr(poolArgs, "/signin")
-        PoolSendTo(other, Map("t", "signin"))
-    else if !InStr(poolArgs, "/background")
-        PoolSendTo(other, Map("t", "show"))
+    if other {
+        if InStr(poolArgs, "/signout")
+            PoolSendTo(other, Map("t", "signout"))
+        else if InStr(poolArgs, "/signin")
+            PoolSendTo(other, Map("t", "signin"))
+        else if !InStr(poolArgs, "/background")
+            PoolSendTo(other, Map("t", "show"))
+    }
     ExitApp()
+}
+
+PoolTakeMutex() {
+    h := DllCall("CreateMutex", "Ptr", 0, "Int", 0, "Str", "Local\CaptionCompanion.CopilotPool", "Ptr")
+    if (h && A_LastError = 183) {               ; ERROR_ALREADY_EXISTS: another copy holds it
+        DllCall("CloseHandle", "Ptr", h)
+        return 0
+    }
+    return h                                    ; held until this process ends
 }
 
 ; ------------------------------------------------------------------------------
@@ -133,26 +171,20 @@ lastPublished := ""
 jobSeq := 0
 workerJs := ""
 viewsShown := false
-; The board: dedicated pages, one per name (key) an app asks for, shown together in one window
-; (the Companion's Live helpers). Not part of the regular pool.
-boardGui := 0
-boardPages := Map()       ; key -> view
-boardWanted := []         ; [{key, label}] in the order the app gave
-boardTitle := "Live helpers"
-boardTab := 1             ; which page is shown when there are more than BoardColumns
-boardTabBtns := []
 
 ; ------------------------------------------------------------------------------
 ; Start
 ; ------------------------------------------------------------------------------
 PoolTrimLog()
+poolSites := PoolLoadSites()      ; id -> site (Map), only the ones allowed here
+site := PoolPickSite()            ; the site in use (Map)
 PoolWipeIfAsked()
 PoolBuildGui()
 OnMessage(0x4A, PoolOnCopyData)
 OnExit(PoolOnExit)
 if (InStr(poolArgs, "/show") || InStr(poolArgs, "/signin") || !InStr(poolArgs, "/background"))
     PoolShow()
-PoolLog("started (" (A_PtrSize * 8) "-bit, version " APP_VERSION ")")
+PoolLog("started (" (A_PtrSize * 8) "-bit, version " APP_VERSION (POOL_DEV ? ", DEV MODE" : "") "), site: " PoolSiteName())
 SetTimer(PoolStart, -50)
 SetTimer(PoolHousekeep, 1000)
 
@@ -161,9 +193,11 @@ PoolStart() {
     try {
         if !IsSet(WebView2)
             throw Error("the WebView2 library is missing (app\lib\WebView2)")
+        if !IsObject(site)
+            throw Error("no chat site files found (app\chat-sites)")
         workerJs := FileRead(POOL_WORKER, "UTF-8")
         sso := PoolNum("SingleSignOn")
-        dir := POOL_WEB "\" (sso ? "sso" : "no-sso")
+        dir := PoolProfileDir()
         DirCreate(dir)
         env := WebView2.CreateEnvironmentAsync({ AllowSingleSignOnUsingOSPrimaryAccount: sso ? 1 : 0 }, dir).await(60000)
         ver := ""
@@ -171,7 +205,6 @@ PoolStart() {
         PoolLog("browser engine " ver ", single sign-on " (sso ? "on" : "off"))
         Loop Max(1, PoolNum("Views"))
             PoolAddView()
-        PoolBoardSync()
     } catch as err {
         envError := err.Message
         PoolLog("ENGINE FAILED: " err.Message)
@@ -190,10 +223,9 @@ PoolAddView() {
     global viewSeq
     viewSeq += 1
     v := { id: viewSeq, gui: 0, ctrl: 0, wv: 0, state: "loading", host: "", onLogin: false, dead: false,
-        jobId: "", reqId: "", conv: "", lastUse: A_TickCount, createdAt: A_TickCount, failedAt: 0, held: false, needWarm: false,
-        boardKey: "" }
+        jobId: "", reqId: "", conv: "", lastUse: A_TickCount, createdAt: A_TickCount, failedAt: 0, held: false, needWarm: false }
     try {
-        v.gui := Gui("+ToolWindow +Owner" pg.Hwnd, "Copilot view " v.id)
+        v.gui := Gui("+ToolWindow +Owner" pg.Hwnd, PoolSiteName() " view " v.id)
         v.gui.OnEvent("Close", PoolChatClosed.Bind(v))     ; only while it's shown as your Copilot window
         v.gui.OnEvent("Size", PoolChatSized.Bind(v))
         PoolPlaceView(v)
@@ -214,7 +246,7 @@ PoolInitView(v, signin := false, url := "") {
     v.ctrl.IsVisible := true             ; "visible" to the page even while its window is hidden
     v.wv := v.ctrl.CoreWebView2
     try v.wv.Settings.IsStatusBarEnabled := false
-    try v.wv.Settings.AreDevToolsEnabled := false      ; no F12 tools in these windows
+    try v.wv.Settings.AreDevToolsEnabled := POOL_DEV   ; F12 tools only in dev mode (to inspect a site's page)
     if !signin {
         try v.wv.Settings.AreDefaultScriptDialogsEnabled := false
         try v.wv.CallDevToolsProtocolMethodAsync("Emulation.setFocusEmulationEnabled", '{"enabled":true}').await(5000)
@@ -225,26 +257,18 @@ PoolInitView(v, signin := false, url := "") {
     v.wv.add_NavigationCompleted(PoolViewNavDone.Bind(v))
     v.wv.add_ProcessFailed(PoolViewFailed.Bind(v))
     v.wv.AddScriptToExecuteOnDocumentCreatedAsync(PoolWorkerPrefix(v.id) workerJs).await(10000)
-    v.wv.Navigate(url != "" ? url : PoolSetting("Address"))
+    v.wv.Navigate(url != "" ? url : PoolAddress())
 }
 
 PoolWorkerPrefix(id) {
-    cfg := Map("id", id, "url", PoolSetting("Address"), "hosts", PoolHosts(),
-        "sendWaitMs", PoolNum("SendWaitSec") * 1000)
-    if FileExist(POOL_SEL_FILE) {
-        try {
-            sel := Json.Parse(FileRead(POOL_SEL_FILE, "UTF-8"))
-            if (sel is Map)
-                cfg["selectors"] := sel
-        } catch as err {
-            PoolLog("copilot-pool-selectors.json ignored: " err.Message)
-        }
-    }
+    ; the page script gets the whole site description (selectors, how answers and new chats work)
+    cfg := Map("id", id, "url", PoolAddress(), "hosts", PoolHosts(), "site", site,
+        "account", PoolNoAccountCheck() ? "none" : "work", "sendWaitMs", PoolNum("SendWaitSec") * 1000)
     return "window.__lccPool=" Json.Stringify(cfg) ";`n"
 }
 
 PoolPlaceView(v) {
-    if (v.held || v.boardKey != "")             ; your Copilot window / a board page: leave it where it is
+    if v.held                                   ; your Copilot window: leave it where it is
         return
     if viewsShown
         v.gui.Show("NoActivate x" (40 + 40 * v.id) " y" (40 + 40 * v.id) " w1100 h800")
@@ -261,15 +285,13 @@ PoolCloseView(v) {
             views.RemoveAt(i)
             break
         }
-    if (v.boardKey != "" && boardPages.Has(v.boardKey) && boardPages[v.boardKey] = v)
-        boardPages.Delete(v.boardKey)
 }
 
-; Pages in the regular pool (not board pages)
+; Pages in the pool
 PoolRegularCount() {
     n := 0
     for v in views
-        if (!v.dead && v.boardKey = "")
+        if !v.dead
             n += 1
     return n
 }
@@ -284,7 +306,7 @@ PoolReplaceView(v, why) {
     if (v.conv != "")
         convs.Delete(v.conv)
     PoolCloseView(v)
-    SetTimer(v.boardKey != "" ? PoolBoardSync : PoolTopUp, -2000)
+    SetTimer(PoolTopUp, -2000)
 }
 
 ; Keeps the number of views at the setting (plus the ones conversations need, up to MaxViews)
@@ -303,7 +325,7 @@ PoolPopup(v, sender, args) {
     uri := ""
     try uri := args.Uri
     try args.Handled := true
-    if ((v.held || v.boardKey != "") && RegExMatch(uri, "i)^https://"))
+    if (v.held && RegExMatch(uri, "i)^https://"))
         SetTimer(() => Run(uri), -1)
 }
 
@@ -321,25 +343,52 @@ PoolNavStarting(sender, args) {
 ; ==============================================================================
 ; A page shown as your own Copilot window (💬). Yours until you close it.
 ; ==============================================================================
-PoolShowChat(v, label) {
+; A window with a "conversation" name (e.g. one per helper) remembers its own place and size
+; ([Window <name>] in copilot-pool.ini); others use the last place any window had ([ChatWindow]).
+PoolShowChat(v, label, quiet := false) {     ; quiet: an app opened it by itself - never take the focus
+    v.gui.Title := PoolSiteName() (label != "" ? " - " label : "") " (Caption Companion)"
+    if v.held {                                  ; already open (the same helper again): bring it up, leave it where it is
+        if quiet
+            return
+        try {
+            if (WinGetMinMax("ahk_id " v.gui.Hwnd) = -1)
+                WinRestore("ahk_id " v.gui.Hwnd)
+        }
+        v.gui.Show()
+        try v.ctrl.Fill()
+        return
+    }
     held := 0
     for x in views
         if x.held
             held += 1
     v.held := true
-    v.gui.Opt("-ToolWindow -Owner +Resize +MinSize480x400")
-    v.gui.Title := "Copilot" (label != "" ? " - " label : "") " (Caption Companion)"
-    w := PoolNum("ChatW"), h := PoolNum("ChatH")
-    x := IniRead(POOL_INI, "ChatWindow", "X", "")
-    y := IniRead(POOL_INI, "ChatWindow", "Y", "")
+    v.gui.Opt("-ToolWindow -Owner +Resize +MinSize360x300")
+    sec := PoolChatSection(v)
+    x := IniRead(POOL_INI, sec, "X", ""), y := IniRead(POOL_INI, sec, "Y", "")
+    w := IniRead(POOL_INI, sec, "W", ""), h := IniRead(POOL_INI, sec, "H", "")
+    off := 0
+    if !(IsInteger(x) && IsInteger(y)) {         ; a window never placed before: near the last one, a bit offset
+        x := IniRead(POOL_INI, "ChatWindow", "X", ""), y := IniRead(POOL_INI, "ChatWindow", "Y", "")
+        off := 30 * held
+    }
+    if !(IsInteger(w) && IsInteger(h))
+        w := PoolNum("ChatW"), h := PoolNum("ChatH")
     pos := ""
-    if (IsInteger(x) && IsInteger(y) && PoolOnScreen(x + 30 * held, y + 30 * held))
-        pos := "x" (x + 30 * held) " y" (y + 30 * held) " "
-    v.gui.Show(pos "w" w " h" h)
+    if (IsInteger(x) && IsInteger(y) && PoolOnScreen(x + off, y + off))
+        pos := "x" (x + off) " y" (y + off) " "
+    v.gui.Show(pos "w" w " h" h (quiet ? " NoActivate" : ""))
+    if quiet {                                   ; in front of the other windows, but your typing stays where it is:
+        for after in [-1, -2]                    ; always-on-top for a moment, then not (SWP_NOMOVE|NOSIZE|NOACTIVATE)
+            DllCall("SetWindowPos", "Ptr", v.gui.Hwnd, "Ptr", after, "Int", 0, "Int", 0, "Int", 0, "Int", 0, "UInt", 0x13)
+    }
     try v.ctrl.Fill()
-    PoolLog("view " v.id " shown as a Copilot window")
+    PoolLog("view " v.id " shown as a Copilot window" (v.conv != "" ? " (" v.conv ")" : ""))
     PoolEnsureSpare()
+    PoolUpdateState()                            ; apps see which windows are open
 }
+
+PoolChatSection(v) => (v.conv != "" ? "Window " v.conv : "ChatWindow")
 
 PoolChatSized(v, g, minMax, *) {
     if (v.held && minMax != -1)
@@ -350,20 +399,34 @@ PoolChatClosed(v, *) {
     if !v.held
         return
     try {                                       ; remember the size and place for next time
-        v.gui.GetPos(&x, &y)
-        v.gui.GetClientPos(, , &w, &h)
-        IniWrite(x, POOL_INI, "ChatWindow", "X")
-        IniWrite(y, POOL_INI, "ChatWindow", "Y")
-        dpi := A_ScreenDPI / 96
-        PoolSet("ChatW", Round(w / dpi))
-        PoolSet("ChatH", Round(h / dpi))
+        if (WinGetMinMax("ahk_id " v.gui.Hwnd) = 0) {
+            v.gui.GetPos(&x, &y)
+            v.gui.GetClientPos(, , &w, &h)
+            dpi := A_ScreenDPI / 96
+            w := Round(w / dpi), h := Round(h / dpi)
+            for sec in (v.conv != "" ? ["ChatWindow", PoolChatSection(v)] : ["ChatWindow"]) {
+                IniWrite(x, POOL_INI, sec, "X")
+                IniWrite(y, POOL_INI, sec, "Y")
+                IniWrite(w, POOL_INI, sec, "W")
+                IniWrite(h, POOL_INI, sec, "H")
+            }
+            PoolSet("ChatW", w)
+            PoolSet("ChatH", h)
+        }
     }
     v.held := false
     v.lastUse := A_TickCount
     v.gui.Opt("+ToolWindow +Owner" pg.Hwnd)
+    if (v.conv != "") {                         ; that window's conversation (its helper) ends with it
+        PoolLog("view " v.id " window closed - conversation " v.conv " ended")
+        convs.Delete(v.conv)
+        v.conv := ""
+    }
+    v.convFresh := false
     if (v.jobId = "")                           ; a fresh chat, then back to the pool
         try v.wv.PostWebMessageAsString('{"t":"newchat"}')
     PoolLog("view " v.id " window closed - back in the pool")
+    PoolUpdateState()                           ; apps see the window is gone
     SetTimer(PoolDispatch, -1)
     ; the window hides itself (default for Close)
 }
@@ -393,7 +456,7 @@ PoolOpenSignIn(*) {
     v := { id: 0, gui: 0, ctrl: 0, wv: 0, state: "loading", host: "", onLogin: false, dead: false,
         jobId: "", reqId: "", conv: "", lastUse: A_TickCount, signin: true }
     try {
-        v.gui := Gui("+Resize", "Sign in to Copilot - Caption Companion")
+        v.gui := Gui("+Resize", "Sign in to " PoolSiteName() " - Caption Companion")
         v.gui.OnEvent("Size", (g, mm, *) => (mm != -1 && v.ctrl ? v.ctrl.Fill() : 0))
         v.gui.OnEvent("Close", (*) => PoolCloseSignIn())
         v.gui.Show("w1000 h760")
@@ -422,7 +485,7 @@ PoolCloseSignIn() {
     ; pages that were waiting on the sign-in page load Copilot again
     for x in views
         if (x.state != "ready" && x.jobId = "")
-            try x.wv.Navigate(PoolSetting("Address"))
+            try x.wv.Navigate(PoolAddress())
 }
 
 ; ==============================================================================
@@ -454,16 +517,23 @@ PoolOnViewMessage(v, raw) {
     switch m.Get("t", "") {
         case "hello":
             v.onLogin := false
-            if !isSignin
-                v.needWarm := PoolNum("WarmUp") ? true : false    ; a freshly loaded page: warm it up once ready
-            if (!isSignin && v.boardKey != "") {           ; a board page reloaded: its chat starts over
-                v.fresh := true
-                PoolBoardHeader(v)
+            ; the page reloaded on purpose in the middle of a job (a site whose "new chat" is a page load, or
+            ; that loads a new page when it sends): its script carries the job on - nothing is lost
+            if (!isSignin && v.jobId != "" && m.Get("resume", "") = v.jobId) {
+                DbgTrace("pool", PoolViewName(v) ": page reloaded during job " v.jobId " - the job carries on")
+                return
             }
+            if !isSignin
+                v.needWarm := PoolWarmUpOn()                       ; a freshly loaded page: warm it up once ready
             if (!isSignin && v.jobId = "" && v.conv != "") {      ; the page reloaded: its chat is gone
-                PoolLog("view " v.id ": conversation lost (page reloaded)")
-                convs.Delete(v.conv)
-                v.conv := ""
+                if v.held {                               ; still your open window (e.g. a helper's): it stays
+                    v.convFresh := true                   ; that helper's, but the next prompt must be a full one
+                    PoolLog("view " v.id ": " v.conv " window reloaded - its chat starts over")
+                } else {
+                    PoolLog("view " v.id ": conversation lost (page reloaded)")
+                    convs.Delete(v.conv)
+                    v.conv := ""
+                }
             }
             if (!isSignin && v.reqId != "" && reqs.Has(v.reqId)) {
                 r := reqs[v.reqId]
@@ -479,11 +549,13 @@ PoolOnViewMessage(v, raw) {
                 v.onLogin := false
                 if (v.jobId != "" && !reqs.Has(v.reqId))     ; a cancelled job has finished
                     v.jobId := "", v.reqId := ""
+                if (!isSignin && v.HasOwnProp("sawLogin") && v.sawLogin) {   ; signed in on this page: the others follow
+                    v.sawLogin := false
+                    SetTimer(PoolSignedInSomewhere.Bind(v), -1)
+                }
             }
             if (isSignin && v.state = "ready" && !v.HasOwnProp("signout"))
                 SetTimer(PoolSigninReady, -1500)
-            if (!isSignin && v.boardKey != "")
-                PoolBoardHeader(v)
             PoolUpdateState()
             PoolDispatch()
         case "account":
@@ -506,14 +578,10 @@ PoolOnViewMessage(v, raw) {
                 r.sent := true
                 r.status := "sent - waiting for the answer"
                 r.sentAt := A_TickCount
+                if (r.newChat && v.HasOwnProp("convFresh"))
+                    v.convFresh := false                    ; the window's chat has its full prompt again
                 DbgTrace("pool", "request " r.logName " is IN Copilot (" PoolViewName(v) "): " (A_TickCount - r.queuedAt) " ms after it arrived, "
                     (A_TickCount - r.startedAt) " ms after the page got it")
-                if (v.boardKey != "" && !r.warm) {
-                    if r.newChat
-                        v.fresh := false                    ; the board page now has this chat's context
-                    v.note := "writing..."
-                    PoolBoardHeader(v)
-                }
                 PoolReply(r, Map("t", "sent", "id", r.id))
                 PoolRefreshList()
             }
@@ -536,11 +604,6 @@ PoolOnViewMessage(v, raw) {
             r := reqs[rid]
             if ((r.conv != "" && v.conv = "") || (r.show && !v.held))   ; ended / window closed while it ran: clean the chat
                 try v.wv.PostWebMessageAsString('{"t":"newchat"}')
-            if (v.boardKey != "" && !r.warm) {
-                v.note := m.Get("ok", 0) ? "answered " FormatTime(, "h:mm:ss tt")
-                    : m.Get("sent", 0) ? "no answer: " m.Get("error", "") : "waiting: " m.Get("error", "")
-                PoolBoardHeader(v)
-            }
             if m.Get("ok", 0) {
                 PoolFinish(r, true, "", "", m.Get("text", ""), m.Get("markdown", ""), m.Get("ms", 0))
                 PoolLog("request " r.logName " answered in " Round(m.Get("ms", 0) / 1000, 1) " s (" m.Get("how", "") ")")
@@ -574,18 +637,27 @@ PoolViewNavDone(v, sender, args) {
         {
             if v.HasOwnProp("signout") {
                 try v.gui.Title := "Signing out - " (host != "" ? host : "loading...") " - close this window when it says you're signed out"
-                if (v.step = 1 && InStr(host, "live.com")) {      ; Microsoft account done: now the work/school sign-out
+                if (v.step = 1 && host != "") {      ; personal-account sign-out done: now the site's own sign-out
                     v.step := 2
-                    SetTimer(() => v.wv.Navigate(POOL_SIGNOUT_URL), -1500)
+                    SetTimer(() => v.wv.Navigate(PoolSiteGet("signOutUrl")), -1500)
                 }
             } else {
-                try v.gui.Title := "Sign in to Copilot - " (host != "" ? host : "loading...") " (Caption Companion)"
+                try v.gui.Title := "Sign in to " PoolSiteName() " - " (host != "" ? host : "loading...") " (Caption Companion)"
             }
         }
         if (host != "" && !PoolHostAllowed(host) && host != "about:blank") {
-            if RegExMatch(host, "i)(^|\.)(login\.|account\.|signup\.)|microsoftonline|live\.com$") {
+            if PoolIsSignInHost(host) {
+                wasWorking := (v.state = "ready" || v.state = "busy" || v.state = "resetting")
                 v.onLogin := true
                 v.state := "signin"
+                if !v.HasOwnProp("signin") {
+                    v.sawLogin := true
+                    ; a working page fell to the sign-in page (e.g. you signed out in a Copilot window):
+                    ; the sign-in is shared, so every page follows
+                    ; (only if it STAYS there: a page load can pass through the sign-in page for a moment)
+                    if (wasWorking || poolState = "ready")
+                        SetTimer(PoolSignedOutSomewhere.Bind(v), -5000)
+                }
             }
         }
         if !args.IsSuccess {
@@ -612,6 +684,34 @@ PoolViewFailed(v, sender, args) {
         SetTimer(PoolReplaceView.Bind(v, kind = 1 ? "page process exited" : "page stopped responding"), -1)
     else
         SetTimer(PoolLog.Bind("view " v.id ": a helper process failed (kind " kind ")"), -1)
+}
+
+; ==============================================================================
+; One sign-in for every page: signed out on one page = signed out on all; signed in on one = all
+; (they share the sign-in folder, but a page that is already open keeps what it loaded until it reloads)
+; ==============================================================================
+PoolSignedOutSomewhere(src) {
+    global account
+    static last := 0
+    if (src.dead || !src.onLogin)                ; it went back to Copilot by itself: not a sign-out
+        return
+    if (A_TickCount - last < 20000)              ; the other pages reloading land here too: once is enough
+        return
+    last := A_TickCount
+    PoolLog(PoolViewName(src) " is on the sign-in page - signed out: every Copilot page reloads")
+    account := {email: "", tenant: "", how: "", known: false}
+    for x in views.Clone()
+        if (!x.dead && x != src)
+            try x.wv.Navigate(PoolAddress())     ; a running job fails cleanly when its page reloads
+    PoolUpdateState()
+}
+
+PoolSignedInSomewhere(src) {
+    PoolLog(PoolViewName(src) " signed in - pages still on the sign-in page reload")
+    for x in views
+        if (!x.dead && x != src && x.jobId = "" && x.state != "ready" && x.state != "busy" && x.state != "resetting")
+            try x.wv.Navigate(PoolAddress())
+    PoolUpdateState()
 }
 
 PoolEngineDied() {
@@ -683,6 +783,8 @@ PoolAccountKind() {
 
 PoolAccountOk(&why) {
     why := ""
+    if PoolNoAccountCheck()                       ; a dev-only test site with no accounts (dev mode only)
+        return true
     kind := PoolAccountKind()
     if (kind != "" && PoolNum("AllowPersonal"))  ; testing switch: any signed-in account
         return true
@@ -713,13 +815,14 @@ PoolNewRequest(m, hwnd) {
     jobSeq += 1
     r := { id: m.Get("id", "r" jobSeq), hwnd: hwnd, prompt: m.Get("prompt", ""), label: m.Get("label", ""),
         conv: m.Get("conversation", ""), newChat: m.Get("newChat", 0) ? true : false, stream: m.Get("stream", 0) ? true : false,
-        show: m.Get("show", 0) ? true : false, page: m.Get("page", ""),
+        show: m.Get("show", 0) ? true : false,
+        orNew: m.Get("orNew", 0) ? true : false,     ; a follow-up whose conversation is gone may start a new one (it carries the full prompt)
+        respectDraft: m.Get("respectDraft", 0) ? true : false,   ; an automatic prompt: never replaces text you typed in the box
+        quiet: m.Get("quiet", 0) ? true : false,   ; show: the window opens without taking the focus (an app opened it by itself)
         queuedAt: A_TickCount, startedAt: 0, sent: false, status: "waiting", view: 0, logName: "#" jobSeq, warm: false,
         tick: IsInteger(m.Get("tick", 0)) ? m.Get("tick", 0) : 0, waitWhy: "", sentAt: 0 }
-    if (r.conv = "" && r.page = "")
+    if (r.conv = "")
         r.newChat := true
-    if (r.page != "")
-        r.show := false
     return r
 }
 
@@ -738,16 +841,10 @@ PoolAsk(r) {
         SetTimer(PoolOpenSignIn, -1)
     else if (r.show && poolState = "account")
         PoolShow()
-    if (r.page != "")                            ; a board page: only its newest prompt matters
-        for id in queue.Clone()
-            if (reqs.Has(id) && reqs[id].page = r.page && (r.newChat || !reqs[id].newChat)) {
-                PoolLog("request " reqs[id].logName " replaced by " r.logName " before it started")
-                PoolFinish(reqs[id], false, "replaced", "a newer prompt replaced it before it was sent")
-            }
     queue.Push(r.id)
     PoolReply(r, Map("t", "queued", "id", r.id, "position", queue.Length))
     PoolLog("request " r.logName " queued" (r.conv != "" ? " (conversation" (r.newChat ? ", new" : ", follow-up") ")" : ""))
-    DbgTrace("pool", "request " r.logName " = Companion ask " r.id " '" r.label "'" (r.page != "" ? " for live helper page" : "")
+    DbgTrace("pool", "request " r.logName " = Companion ask " r.id " '" r.label "'"
         (r.show ? " (💬 window)" : "") (r.newChat ? ", new chat" : ", follow-up") ", " StrLen(r.prompt) " chars, arrived "
         (r.tick ? A_TickCount - r.tick : "?") " ms after the Companion sent it; pool " poolState
         ", queue " queue.Length "   | pages: " PoolViewsSummary())
@@ -778,23 +875,13 @@ PoolDispatch() {
             continue
         }
         if !IsObject(v) {
-            if (r.page != "" && !PoolBoardWants(r.page)) {
-                queue.RemoveAt(i)
-                PoolFinish(r, false, "unsent", "there is no board page called '" r.page "'")
-                continue
-            }
-            if (r.conv = "" && r.page = "" && PoolNoRoom()) {       ; every page is open as your window, and no more allowed
+            if ((r.conv = "" || !convs.Has(r.conv)) && PoolNoRoom()) {   ; every page is open as your window, and no more allowed
                 queue.RemoveAt(i)
                 PoolFinish(r, false, "busy", "every Copilot page is open in a window (" PoolRegularCount() " of " PoolNum("MaxViews") ") - close one and try again")
                 continue
             }
-            if (r.page != "") {
-                bp := boardPages.Has(r.page) ? boardPages[r.page] : 0
-                PoolWaitWhy(r, !IsObject(bp) ? "its live helper page isn't open yet"
-                    : "its live helper page is " bp.state (bp.jobId != "" ? " (running " bp.jobId ")" : "")
-                    (bp.jobId != "" && reqs.Has(bp.reqId) && reqs[bp.reqId].newChat && !reqs[bp.reqId].sent ? " - waiting for the full prompt to go in first" : ""))
-            } else
-                PoolWaitWhy(r, "no free Copilot page")
+            PoolWaitWhy(r, (r.conv != "" && convs.Has(r.conv)) ? "its Copilot window is still busy (" convs[r.conv].state
+                (convs[r.conv].jobId != "" ? ", running " convs[r.conv].jobId : "") ")" : "no free Copilot page")
             i += 1
             continue
         }
@@ -813,16 +900,18 @@ PoolWaitWhy(r, why) {
 }
 
 PoolViewName(v) {
-    return "page " v.id (v.boardKey != "" ? " (live '" v.label "')" : v.held ? " (💬 window)" : "")
+    if v.HasOwnProp("signin")                    ; the sign-in / sign-out window (no pool fields)
+        return "sign-in window"
+    return "page " v.id (v.held ? " (💬 window" (v.conv != "" ? " " v.conv : "") ")" : "")
 }
 
-; One line describing every page: "1 ready, 2 busy j12(#11), 3 live 'Next step' ready ..."
+; One line describing every page: "1 ready, 2 busy j12(#11) 💬window ..."
 PoolViewsSummary() {
     s := ""
     for v in views {
         if v.dead
             continue
-        d := v.id (v.boardKey != "" ? " live'" SubStr(v.label, 1, 14) "'" : "") " " v.state
+        d := v.id " " v.state
         if (v.jobId != "")
             d .= " " v.jobId (reqs.Has(v.reqId) ? "(" reqs[v.reqId].logName (reqs[v.reqId].sent ? " sent" : "") ")" : "")
         if v.held
@@ -836,35 +925,31 @@ PoolViewsSummary() {
 
 PoolPickView(r, &lost) {
     lost := false
-    if (r.page != "") {                          ; a board page: only its own page, never the regular pool
-        if !boardPages.Has(r.page)
-            return 0                              ; not open (yet)
-        v := boardPages[r.page]
-        if v.dead
-            return 0
-        old := (v.jobId != "" && reqs.Has(v.reqId)) ? reqs[v.reqId] : 0
-        if (!r.newChat && IsObject(old) && old.newChat && !old.warm && !old.sent)
-            return 0                              ; a follow-up waits until the full prompt it follows is in
-        if (!r.newChat && v.fresh) {              ; a follow-up, but the page's chat started over
-            lost := true
-            return 0
-        }
-        if (v.jobId != "")
-            return v                              ; busy: the newest prompt wins (PoolRun stops the old job)
-        return (v.state = "ready") ? v : 0
-    }
     if (r.conv != "") {
         if convs.Has(r.conv) {
             v := convs[r.conv]
-            if !v.dead
+            if !v.dead {
+                if (!r.newChat && v.HasOwnProp("convFresh") && v.convFresh) {   ; its chat started over (page reloaded)
+                    if r.orNew
+                        r.newChat := true                 ; a full prompt: fine, it starts the chat again
+                    else {
+                        lost := true                      ; a follow-up alone would lack the context
+                        return 0
+                    }
+                }
                 return (v.state = "ready" && v.jobId = "") ? v : 0
+            }
             convs.Delete(r.conv)
         }
+        if (!r.newChat && r.orNew)                ; its window was closed meanwhile: start it again
+            r.newChat := true
         if !r.newChat {
             lost := true
             return 0
         }
         v := PoolFreeView()
+        if !IsObject(v)
+            v := PoolWarmingView()
         if IsObject(v) {
             convs[r.conv] := v
             v.conv := r.conv
@@ -878,8 +963,13 @@ PoolPickView(r, &lost) {
     if IsObject(v)
         return v
     PoolEnsureSpare()
-    for v in views                               ; none free: a page that is only warming up gives way
-        if (!v.dead && !v.held && v.boardKey = "" && v.conv = "" && v.jobId != "" && reqs.Has(v.reqId) && reqs[v.reqId].warm)
+    return PoolWarmingView()
+}
+
+; None free: a page that is only warming up gives way (PoolRun replaces its warm-up)
+PoolWarmingView() {
+    for v in views
+        if (!v.dead && !v.held && v.conv = "" && v.jobId != "" && reqs.Has(v.reqId) && reqs[v.reqId].warm)
             return v
     return 0
 }
@@ -887,7 +977,7 @@ PoolPickView(r, &lost) {
 ; A ready regular view with no job, no conversation, and not open as your window
 PoolFreeView() {
     for v in views
-        if (!v.dead && !v.held && v.boardKey = "" && v.state = "ready" && v.jobId = "" && v.conv = "")
+        if (!v.dead && !v.held && v.state = "ready" && v.jobId = "" && v.conv = "")
             return v
     return 0
 }
@@ -897,7 +987,7 @@ PoolNoRoom() {
     if (PoolRegularCount() < Max(PoolNum("Views"), PoolNum("MaxViews")))
         return false
     for v in views
-        if (!v.dead && !v.held && v.boardKey = "" && v.conv = "")
+        if (!v.dead && !v.held && v.conv = "")
             return false                        ; free, loading or busy: it will be free again
     return true
 }
@@ -905,7 +995,7 @@ PoolNoRoom() {
 ; Opens one more regular view (up to MaxViews) when none is free or on its way
 PoolEnsureSpare() {
     for v in views
-        if (!v.dead && !v.held && v.boardKey = "" && v.jobId = "" && v.conv = "")
+        if (!v.dead && !v.held && v.jobId = "" && v.conv = "")
             return                              ; free, or still loading
     if (PoolRegularCount() < Max(PoolNum("Views"), PoolNum("MaxViews")))
         SetTimer(PoolAddView, -1)
@@ -913,7 +1003,7 @@ PoolEnsureSpare() {
 
 PoolRun(r, v) {
     global jobSeq
-    preempt := (v.jobId != "")                   ; the page is busy: its job stops and this prompt goes now
+    preempt := (v.jobId != "")                   ; the page is only warming up: that stops and this prompt goes now
     if (preempt && reqs.Has(v.reqId)) {
         old := reqs[v.reqId]
         PoolLog("request " old.logName " replaced by " r.logName " on view " v.id (old.sent ? " (its answer was stopped)" : ""))
@@ -927,11 +1017,11 @@ PoolRun(r, v) {
     r.view := v
     r.startedAt := A_TickCount
     r.status := "typing"
-    board := (r.page != "")
     job := Map("t", "job", "jobId", v.jobId, "prompt", r.prompt, "newChat", r.newChat ? 1 : 0,
-        "keep", (!r.warm && (r.conv != "" || r.show || board)) ? 1 : 0, "stream", r.stream ? 1 : 0,
+        "keep", (!r.warm && (r.conv != "" || r.show)) ? 1 : 0, "stream", r.stream ? 1 : 0,
         "timeoutMs", PoolNum("AnswerTimeoutSec") * 1000,
-        "scroll", (board && !r.warm) ? 1 : 0,          ; board pages follow the newest answer
+        "scroll", (v.held && !r.warm) ? 1 : 0,          ; your 💬 window follows the newest answer
+        "respectDraft", (r.HasOwnProp("respectDraft") && r.respectDraft) ? 1 : 0,
         "preempt", preempt ? 1 : 0)
     try {
         v.wv.PostWebMessageAsString(Json.Stringify(job))
@@ -939,7 +1029,7 @@ PoolRun(r, v) {
         DbgTrace("pool", "request " r.logName " -> " PoolViewName(v) " after waiting " (A_TickCount - r.queuedAt) " ms"
             (preempt ? " (REPLACING the page's running job)" : "") (r.warm ? " (warm-up)" : "") "   | pages: " PoolViewsSummary())
         if r.show
-            PoolShowChat(v, r.label)            ; you watch Copilot write the answer
+            PoolShowChat(v, r.label, r.HasOwnProp("quiet") && r.quiet)   ; you watch Copilot write the answer
     } catch as err {
         v.jobId := "", v.reqId := ""
         PoolFinish(r, false, "unsent", "couldn't reach the Copilot page: " err.Message)
@@ -973,11 +1063,9 @@ PoolFinish(r, ok, kind := "", why := "", text := "", markdown := "", ms := 0, kn
 PoolWarm(v) {
     global jobSeq
     v.needWarm := false
-    if (v.boardKey != "" && !v.fresh)            ; a board page already holding a call's chat: leave it
-        return
     jobSeq += 1
     r := { id: "warm" jobSeq, hwnd: -1, prompt: PoolSetting("WarmUpPrompt"), label: "warm-up", conv: "",
-        newChat: true, stream: false, show: false, page: "", queuedAt: A_TickCount, startedAt: 0, sent: false,
+        newChat: true, stream: false, show: false, queuedAt: A_TickCount, startedAt: 0, sent: false,
         status: "warming up", view: 0, logName: "warm-up #" jobSeq, warm: true, tick: 0, waitWhy: "", sentAt: 0 }
     reqs[r.id] := r
     PoolRun(r, v)
@@ -1005,7 +1093,7 @@ PoolHousekeep() {
         r := reqs[id]
         ; a follow-up waits for its own conversation's previous answer; a 💬 request waits while you
         ; sign in; others only briefly
-        wait := ((r.conv != "" && convs.Has(r.conv)) || r.page != "") ? PoolNum("AnswerTimeoutSec") + 60
+        wait := (r.conv != "" && convs.Has(r.conv)) ? PoolNum("AnswerTimeoutSec") + 60
             : (r.show && poolState != "ready") ? PoolNum("SignInWaitSec")
             : PoolNum("QueueWaitSec")
         if (now - r.queuedAt > wait * 1000)
@@ -1020,38 +1108,31 @@ PoolHousekeep() {
     for v in views {
         if v.dead || v.jobId != "" || v.held      ; your open Copilot windows are never touched
             continue
-        if (v.boardKey != "") {                   ; board pages keep their answers; only retry a failed load
-            if (v.state = "load-failed" && now - v.failedAt > 30000) {
-                v.failedAt := now
-                try v.wv.Navigate(PoolSetting("Address"))
-            }
-            continue
-        }
         if (v.conv != "" && now - v.lastUse > PoolNum("ConversationIdleMin") * 60000)
             PoolEndConversation(v.conv)
         else if (v.conv = "" && v.state = "ready" && now - v.lastUse > PoolNum("RefreshIdleMin") * 60000) {
             v.lastUse := now
             DbgTrace("pool", PoolViewName(v) ": idle " PoolNum("RefreshIdleMin") " min - reloading it (it will warm up again)")
             try {
-                v.wv.Navigate(PoolSetting("Address"))
+                v.wv.Navigate(PoolAddress())
             }
         } else if (v.state = "load-failed" && now - v.failedAt > 30000) {
             v.failedAt := now
-            try v.wv.Navigate(PoolSetting("Address"))
+            try v.wv.Navigate(PoolAddress())
         }
     }
     ; extra views opened for conversations close again when idle
     want := Max(1, PoolNum("Views"))
     if (PoolRegularCount() > want)
         for v in views.Clone()
-            if (PoolRegularCount() > want && !v.held && v.boardKey = "" && v.jobId = "" && v.conv = "" && now - v.lastUse > 300000) {
+            if (PoolRegularCount() > want && !v.held && v.jobId = "" && v.conv = "" && now - v.lastUse > 300000) {
                 PoolLog("view " v.id " closed (not needed)")
                 PoolCloseView(v)
             }
     if (queue.Length && poolState = "ready")
         PoolDispatch()
     ; freshly loaded pages send one short warm-up message (one page per second), so real prompts go at once
-    if (poolState = "ready" && PoolNum("WarmUp"))
+    if (poolState = "ready" && PoolWarmUpOn())
         for v in views
             if (!v.dead && v.needWarm && !v.held && v.state = "ready" && v.jobId = "" && v.conv = "") {
                 PoolWarm(v)
@@ -1072,7 +1153,7 @@ PoolUpdateState(*) {
             continue
         if (v.state = "ready" || v.state = "busy" || v.state = "resetting") {   ; loaded and working
             ready += 1
-            if (v.state = "ready" && v.jobId = "" && v.conv = "" && !v.held && v.boardKey = "")
+            if (v.state = "ready" && v.jobId = "" && v.conv = "" && !v.held)
                 free += 1
         }
         if v.onLogin
@@ -1095,8 +1176,13 @@ PoolUpdateState(*) {
         s := "ready", r := ready " Copilot page(s) open"
     poolState := s
     poolReason := r
+    windows := []                                ; conversations open as windows (e.g. a helper's 💬 window)
+    for v in views
+        if (!v.dead && v.held && v.conv != "")
+            windows.Push(v.conv)
     msg := Map("t", "state", "state", s, "reason", r, "views", views.Length, "ready", ready, "free", free,
-        "queued", queue.Length, "account", account.email = "" ? "" : PoolMaskEmail(account.email), "accountKind", PoolAccountKind())
+        "queued", queue.Length, "account", account.email = "" ? "" : PoolMaskEmail(account.email), "accountKind", PoolAccountKind(),
+        "windows", windows)
     sig := Json.Stringify(msg)
     if (sig != lastPublished) {
         PoolPublish(msg)
@@ -1136,7 +1222,7 @@ PoolReply(r, msg) {
 ; Messages from apps
 ; ==============================================================================
 PoolOnCopyData(wParam, lParam, msg, hwnd) {
-    if (hwnd != pg.Hwnd)
+    if (!IsSet(pg) || !IsObject(pg) || hwnd != pg.Hwnd)    ; (a message during start-up or exit)
         return
     try {
         if (NumGet(lParam, 0, "UPtr") != POOL_TAG)
@@ -1176,10 +1262,6 @@ PoolHandle(text) {
             PoolOpenSignIn()
         case "signout":
             PoolSignOut(true)
-        case "board":
-            PoolBoardSet(m)
-        case "boardshow":
-            PoolBoardShow(m.Get("activate", 0))
         case "quit":
             ExitApp()
     }
@@ -1211,193 +1293,6 @@ PoolSendTo(hwnd, obj) {
 }
 
 ; ==============================================================================
-; The board: one dedicated Copilot page per key (e.g. the Companion's auto helpers),
-; shown together in one window, side by side (tabs when there are more than BoardColumns).
-; Not part of the regular pool: requests reach a board page only by its key ("page").
-; ==============================================================================
-PoolBoardSet(m) {
-    global boardWanted, boardTitle
-    list := []
-    pages := m.Get("pages", [])
-    if (pages is Array)
-        for p in pages
-            if (p is Map && Trim(p.Get("key", "")) != "")
-                list.Push({key: Trim(p["key"]), label: p.Get("label", p["key"])})
-    boardWanted := list
-    if (m.Get("title", "") != "")
-        boardTitle := m["title"]
-    PoolLog("board: " list.Length " page(s) wanted")
-    PoolBoardSync()
-}
-
-PoolBoardWants(key) {
-    for w in boardWanted
-        if (w.key = key)
-            return true
-    return false
-}
-
-; Opens the wanted board pages, closes the unwanted ones (when idle), lays them out
-PoolBoardSync(*) {
-    if (env = 0 || envError != "")
-        return
-    try {
-        PoolBoardEnsureGui()
-        for key, v in boardPages.Clone()
-            if (!PoolBoardWants(key) && v.jobId = "") {
-                PoolLog("board page '" key "' closed")
-                PoolCloseView(v)
-            }
-        for w in boardWanted {
-            if boardPages.Has(w.key) {
-                boardPages[w.key].label := w.label
-                PoolBoardHeader(boardPages[w.key])
-            } else {
-                PoolAddBoardPage(w.key, w.label)
-            }
-        }
-        PoolBoardLayout()
-    } catch as err {
-        PoolLog("board sync FAILED: " err.Message)
-    }
-    PoolUpdateState()
-    PoolDispatch()
-}
-
-PoolAddBoardPage(key, label) {
-    global viewSeq
-    viewSeq += 1
-    v := { id: viewSeq, gui: 0, ctrl: 0, wv: 0, state: "loading", host: "", onLogin: false, dead: false,
-        jobId: "", reqId: "", conv: "", lastUse: A_TickCount, createdAt: A_TickCount, failedAt: 0, held: false, needWarm: false,
-        boardKey: key, label: label, fresh: true, note: "", hdr: 0 }
-    try {
-        v.gui := Gui("-Caption -DPIScale +Parent" boardGui.Hwnd)     ; a panel inside the board window
-        v.gui.MarginX := 0, v.gui.MarginY := 0
-        v.gui.BackColor := "F3F3F3"
-        v.gui.SetFont("s10 bold", "Segoe UI")
-        v.hdr := v.gui.Add("Text", "x6 y3 w400 h20", label)
-        v.gui.Show("NoActivate x0 y0 w600 h600")
-        PoolInitView(v)
-        boardPages[key] := v
-        views.Push(v)
-        PoolLog("board page '" key "' opened (view " v.id ")")
-    } catch as err {
-        PoolLog("board page '" key "' FAILED to open: " err.Message)
-        try v.gui.Destroy()
-    }
-}
-
-PoolBoardEnsureGui() {
-    global boardGui
-    if IsObject(boardGui)
-        return
-    boardGui := Gui("+Resize -DPIScale +MinSize560x360", boardTitle " (Caption Companion)")
-    boardGui.BackColor := "D9D9D9"
-    boardGui.SetFont("s9", "Segoe UI")
-    boardGui.OnEvent("Size", (*) => PoolBoardLayout())
-    boardGui.OnEvent("Close", PoolBoardClosed)
-    w := IniRead(POOL_INI, "Board", "W", "1300")
-    h := IniRead(POOL_INI, "Board", "H", "820")
-    boardGui.Show("Hide w" w " h" h)
-}
-
-; Side by side when they fit (BoardColumns), otherwise one at a time with a tab button each
-PoolBoardLayout() {
-    global boardTab
-    if !IsObject(boardGui)
-        return
-    try {
-        keys := []
-        for w in boardWanted
-            if boardPages.Has(w.key)
-                keys.Push(w.key)
-        boardGui.GetClientPos(, , &W, &H)
-        n := keys.Length
-        tabbed := (n > Max(1, PoolNum("BoardColumns")))
-        boardTab := Max(1, Min(boardTab, n))
-        while (tabbed && boardTabBtns.Length < n) {
-            b := boardGui.Add("Button", "x0 y0 w150 h26 Hidden", "")
-            b.OnEvent("Click", PoolBoardTab.Bind(boardTabBtns.Length + 1))
-            boardTabBtns.Push(b)
-        }
-        for i, b in boardTabBtns {
-            if (tabbed && i <= n) {
-                b.Text := (i = boardTab ? "▶ " : "") boardPages[keys[i]].label
-                b.Move(6 + (i - 1) * 156, 4, 150, 26)
-                b.Visible := true
-            } else {
-                b.Visible := false
-            }
-        }
-        if tabbed {
-            for i, key in keys {
-                if (i = boardTab)
-                    PoolBoardPlace(boardPages[key], 0, 34, W, H - 34)
-                else
-                    boardPages[key].gui.Hide()
-            }
-        } else if n {
-            gap := 4
-            colW := Floor((W - gap * (n - 1)) / n)
-            for i, key in keys
-                PoolBoardPlace(boardPages[key], (i - 1) * (colW + gap), 0, colW, H)
-        }
-    }
-}
-
-PoolBoardPlace(v, x, y, w, h) {
-    v.gui.Show("NoActivate x" x " y" y " w" w " h" h)
-    try v.hdr.Move(6, 3, Max(50, w - 12), 20)
-    rect := Buffer(16)
-    NumPut("int", 0, "int", 26, "int", w, "int", Max(27, h), rect)    ; the page sits under its header
-    try v.ctrl.Bounds := rect
-}
-
-PoolBoardTab(i, *) {
-    global boardTab
-    boardTab := i
-    PoolBoardLayout()
-}
-
-PoolBoardHeader(v) {
-    if !IsObject(v.hdr)
-        return
-    st := v.note != "" ? v.note : v.state = "ready" ? "ready" : v.state = "signin" ? "needs sign-in" : "loading..."
-    try v.hdr.Text := v.label "   ·   " st
-}
-
-; activate: 1 = bring it to the front (you asked), 0 = show it without taking focus (a call started)
-PoolBoardShow(activate := 1) {
-    if (env = 0 || envError != "")
-        return
-    PoolBoardEnsureGui()
-    if DllCall("IsWindowVisible", "ptr", boardGui.Hwnd) {
-        if activate
-            try WinActivate("ahk_id " boardGui.Hwnd)
-        return
-    }
-    x := IniRead(POOL_INI, "Board", "X", "")
-    y := IniRead(POOL_INI, "Board", "Y", "")
-    pos := (IsInteger(x) && IsInteger(y) && PoolOnScreen(x, y)) ? "x" x " y" y " " : ""
-    boardGui.Show(pos (activate ? "" : "NoActivate"))
-    PoolBoardLayout()
-}
-
-PoolBoardClosed(*) {
-    try {
-        if (DllCall("IsIconic", "ptr", boardGui.Hwnd) || DllCall("IsZoomed", "ptr", boardGui.Hwnd))
-            return
-        boardGui.GetPos(&x, &y)
-        boardGui.GetClientPos(, , &w, &h)
-        IniWrite(x, POOL_INI, "Board", "X")
-        IniWrite(y, POOL_INI, "Board", "Y")
-        IniWrite(w, POOL_INI, "Board", "W")
-        IniWrite(h, POOL_INI, "Board", "H")
-    }
-    ; the window just hides; its pages keep running
-}
-
-; ==============================================================================
 ; The pool window
 ; ==============================================================================
 PoolBuildGui() {
@@ -1406,6 +1301,16 @@ PoolBuildGui() {
     pg.SetFont("s10", "Segoe UI")
     pg.Add("Text", "xm w470 vState", "Copilot pool: starting...")
     pg.SetFont("s9")
+    if (poolSites.Count > 1) {                    ; a choice only exists in dev mode (dev-only test sites)
+        names := [], pick := 1
+        for id, s in poolSites {
+            names.Push(s.Get("name", id))
+            if (IsObject(site) && id = site["id"])
+                pick := names.Length
+        }
+        pg.Add("Text", "xm y+6 h20 +0x200", "Chat site" (POOL_DEV ? " (dev mode)" : "") ":")
+        pg.Add("DropDownList", "x+6 yp w300 vSite Choose" pick, names).OnEvent("Change", PoolSiteChanged)
+    }
     pg.Add("Text", "xm w470 h32 vReason", "")
     pg.Add("Text", "xm w470 vAccount", "Account: not known yet")
     pg.Add("Button", "xm w120 h30", "Sign in...").OnEvent("Click", PoolOpenSignIn)
@@ -1432,6 +1337,22 @@ PoolBuildGui() {
     pg.OnEvent("Escape", (*) => pg.Hide())
 }
 
+; Another chat site: saved, then the pool restarts on it (each site keeps its own sign-in folder)
+PoolSiteChanged(ctrl, *) {
+    i := 0
+    for id, s in poolSites {
+        i += 1
+        if (i != ctrl.Value)
+            continue
+        if (IsObject(site) && id = site["id"])
+            return
+        PoolSet("Site", id)
+        PoolLog("chat site changed to '" id "' - restarting")
+        PoolRestart("/show")
+        return
+    }
+}
+
 PoolShow() {
     PoolPaintState()
     PoolRefreshList()
@@ -1441,10 +1362,11 @@ PoolShow() {
 PoolPaintState() {
     try {
         names := Map("off", "Off", "starting", "Starting...", "signin", "Needs sign-in", "account", "Wrong or unknown account", "ready", "Ready")
-        pg["State"].Text := "Copilot pool: " names.Get(poolState, poolState)
+        pg["State"].Text := "Copilot pool: " names.Get(poolState, poolState) (PoolSiteGet("id", "copilot") != "copilot" ? "  -  using " PoolSiteName() : "")
         pg["Reason"].Text := poolReason
         kind := PoolAccountKind()
-        pg["Account"].Text := "Account: " (kind = "" ? "not known yet"
+        pg["Account"].Text := "Account: " (PoolNoAccountCheck() ? "not needed (" PoolSiteName() ")"
+            : kind = "" ? "not known yet"
             : kind = "unknown" ? "signed in, but the email couldn't be read" (PoolSetting("WorkConfirmed") = "unknown" ? " (you confirmed it's your work account)" : "")
             : account.email " (" kind ")")
         pg["BtnConfirm"].Visible := (kind = "unknown" && PoolSetting("WorkConfirmed") != "unknown")
@@ -1530,16 +1452,19 @@ PoolToggleViews(*) {
 ; that window - deletes the sign-in here and restarts the pool, ready to sign in again.
 PoolSignOut(confirm := true) {
     global signinView
-    if (confirm && MsgBox("Sign out of Copilot and restart the pool?`n`n"
-        . "A window opens on Microsoft's sign-out page, which ends this sign-in at Microsoft too. "
+    outUrl := PoolSiteGet("signOutUrl", "")
+    if (confirm && MsgBox("Sign out of " PoolSiteName() " and restart the pool?`n`n"
+        . (outUrl != "" ? "A window opens on the sign-out page, which ends this sign-in at the site too. "
         . "When it says you're signed out, close that window: the pool then forgets the sign-in on this PC and restarts.`n`n"
         . "(With single sign-on on, a work PC may sign you in again with your Windows account.)"
+        : "The pool forgets everything this site stored on this PC (a new, empty sign-in folder) and restarts.")
         , "Copilot pool", "YesNo Icon? 0x40000") != "Yes")      ; 0x40000 = always on top
         return
-    IniWrite(1, POOL_INI, "Pending", "WipeSignIn")
+    PoolNewProfile()                             ; the next start uses a new, empty sign-in folder
+    IniWrite(0, POOL_INI, "Pending", "WipeSignIn")
     PoolSet("WorkConfirmed", "")
     PoolLog("sign out asked")
-    if (env = 0 || envError != "") {
+    if (env = 0 || envError != "" || outUrl = "") {
         PoolRestart("/show")
         return
     }
@@ -1549,17 +1474,18 @@ PoolSignOut(confirm := true) {
         try old.ctrl.Close()
         try old.gui.Destroy()
     }
-    personal := (PoolAccountKind() = "personal")
+    personalUrl := PoolSiteGet("personalSignOutUrl", "")
+    personal := (PoolAccountKind() = "personal" && personalUrl != "")
     v := { id: 0, gui: 0, ctrl: 0, wv: 0, state: "loading", host: "", onLogin: false, dead: false,
         jobId: "", reqId: "", conv: "", lastUse: A_TickCount, signin: true, signout: true, step: personal ? 1 : 2 }
     try {
-        v.gui := Gui("+Resize +AlwaysOnTop", "Signing out of Copilot (Caption Companion)")
+        v.gui := Gui("+Resize +AlwaysOnTop", "Signing out of " PoolSiteName() " (Caption Companion)")
         v.gui.OnEvent("Size", (g, mm, *) => (mm != -1 && v.ctrl ? v.ctrl.Fill() : 0))
         v.gui.OnEvent("Close", (*) => PoolCloseSignIn())
         v.gui.Show("w900 h700")
         signinView := v
         ; personal accounts: Microsoft account sign-out first, then the work/school sign-out
-        PoolInitView(v, true, personal ? "https://login.live.com/logout.srf" : POOL_SIGNOUT_URL)
+        PoolInitView(v, true, personal ? personalUrl : outUrl)
         PoolLog("sign-out window opened")
     } catch as err {
         PoolLog("sign-out window FAILED: " err.Message " - restarting anyway")
@@ -1572,22 +1498,58 @@ PoolRestart(arg := "/background") {
     ExitApp()
 }
 
-; At start: a sign-out asked for last time deletes the sign-in folder (now that nothing uses it)
+; The sign-in folder in use: POOL_WEB\profile-<n>. A sign-out moves to the next number - a brand-new,
+; empty folder - so nothing from the old sign-in can ever be reused, even if the old folder is still
+; locked by a closing browser process. Old folders are deleted at start (retried every start).
+; Each chat site has its own folder (copilot: profile-<n>, others: <site>-profile-<n>), so switching
+; sites never touches another site's sign-in.
+PoolProfileDir(siteId := "") {
+    siteId := siteId != "" ? siteId : PoolSiteGet("id", "copilot")
+    return POOL_WEB "\" (siteId = "copilot" ? "" : siteId "-") "profile-" PoolProfileGen(siteId) (PoolNum("SingleSignOn") ? "-sso" : "")
+}
+
+PoolProfileKey(siteId) => siteId = "copilot" ? "Gen" : "Gen " siteId
+
+PoolProfileGen(siteId) {
+    gen := IniRead(POOL_INI, "Profile", PoolProfileKey(siteId), "1")
+    return IsInteger(gen) ? Integer(gen) : 1
+}
+
+PoolNewProfile() {
+    id := PoolSiteGet("id", "copilot")
+    IniWrite(PoolProfileGen(id) + 1, POOL_INI, "Profile", PoolProfileKey(id))
+}
+
+; At start: an older sign-out still pending moves to a new folder; every other folder is deleted
 PoolWipeIfAsked() {
     if DirExist(POOL_WEB_OLD) {                   ; sign-in data from an early test version: not kept in data\
         try DirDelete(POOL_WEB_OLD, true)
         PoolLog(DirExist(POOL_WEB_OLD) ? "old sign-in folder in data\ could NOT be deleted" : "old sign-in folder in data\ deleted")
     }
-    if (IniRead(POOL_INI, "Pending", "WipeSignIn", "0") != "1")
-        return
-    Loop 30 {
-        try DirDelete(POOL_WEB, true)
-        if !DirExist(POOL_WEB)
-            break
-        Sleep(200)                                ; the old browser processes may still be closing
+    if (IniRead(POOL_INI, "Pending", "WipeSignIn", "0") = "1") {
+        PoolNewProfile()
+        IniWrite(0, POOL_INI, "Pending", "WipeSignIn")
+        PoolLog("signed out - starting with a new, empty sign-in folder")
     }
-    IniWrite(0, POOL_INI, "Pending", "WipeSignIn")
-    PoolLog(DirExist(POOL_WEB) ? "sign-in folder could NOT be deleted (in use)" : "signed out (sign-in folder deleted)")
+    keep := Map()                                 ; every usable site's current folder stays
+    keep.CaseSense := false
+    for id in poolSites
+        keep[PoolProfileDir(id)] := true
+    left := 0
+    Loop Files, POOL_WEB "\*", "D" {
+        if keep.Has(A_LoopFileFullPath)
+            continue
+        Loop 10 {
+            try DirDelete(A_LoopFileFullPath, true)
+            if !DirExist(A_LoopFileFullPath)
+                break
+            Sleep(200)                            ; the old browser processes may still be closing
+        }
+        if DirExist(A_LoopFileFullPath)
+            left += 1
+    }
+    if left
+        PoolLog(left " old sign-in folder(s) still in use - not used any more, deleted at a later start")
 }
 
 PoolOpenSettings(*) {
@@ -1641,12 +1603,87 @@ PoolSet(key, value) {
     try IniWrite(value, POOL_INI, "Settings", key)
 }
 
+; ==============================================================================
+; Chat sites (chat-sites\*.json, see its README): everything that differs between Copilot, Google AI
+; Mode, ... lives in those files; this file and the page script only read them.
+; ==============================================================================
+PoolLoadSites() {
+    sites := Map()
+    for dir in POOL_SITES_DIRS {
+        Loop Files dir "\*.json" {
+            try {
+                s := Json.Parse(FileRead(A_LoopFileFullPath, "UTF-8"))
+                id := (s is Map) ? Trim(s.Get("id", "")) : ""
+                if (id = "")
+                    throw Error("no id")
+                if !sites.Has(id) {
+                    sites[id] := s
+                    continue
+                }
+                base := sites[id]                 ; data\chat-sites\ overrides app\chat-sites\ field by field
+                for k, val in s {
+                    if (k = "selectors" && val is Map && base.Get("selectors", "") is Map) {
+                        for sk, sv in val
+                            base["selectors"][sk] := sv
+                    } else
+                        base[k] := val
+                }
+            } catch as err {
+                PoolLog("chat site file " A_LoopFileName " ignored: " err.Message)
+            }
+        }
+    }
+    for id, s in sites.Clone() {
+        why := ""
+        if (s.Get("devOnly", 0) && !POOL_DEV)
+            why := "dev only"
+        else if !RegExMatch(s.Get("address", ""), "i)^https://")
+            why := "its address isn't https"
+        else if !(s.Get("hosts", "") is Array && s["hosts"].Length)
+            why := "no hosts"
+        else if (s.Get("account", "work") != "work" && !s.Get("devOnly", 0))
+            why := "only dev-only sites may skip the work-account check"
+        if (why != "") {
+            sites.Delete(id)
+            if (why != "dev only")
+                PoolLog("chat site '" id "' not used: " why)
+        }
+    }
+    return sites
+}
+
+PoolPickSite() {
+    id := PoolSetting("Site")
+    if poolSites.Has(id)
+        return poolSites[id]
+    PoolLog("chat site '" id "' isn't available here" (POOL_DEV ? "" : " (dev-only sites need dev mode)") " - using Copilot")
+    if poolSites.Has("copilot")
+        return poolSites["copilot"]
+    for id, s in poolSites
+        return s
+    return 0                                      ; no site files at all: PoolStart reports it
+}
+
+PoolSiteGet(key, def := "") => IsObject(site) ? site.Get(key, def) : def
+PoolSiteName() => PoolSiteGet("name", PoolSiteGet("id", "(no chat site)"))
+PoolWarmUpOn() => (PoolNum("WarmUp") && PoolSiteGet("warmUp", 0)) ? true : false
+PoolAddress() => PoolSiteGet("address", "about:blank")
+PoolNoAccountCheck() => (POOL_DEV && PoolSiteGet("devOnly", 0) && PoolSiteGet("account", "work") = "none")
+
 PoolHosts() {
     a := []
-    for h in StrSplit(PoolSetting("AllowedHosts"), ",", " `t")
-        if (h != "")
-            a.Push(StrLower(h))
+    hs := PoolSiteGet("hosts", [])
+    if (hs is Array)
+        for h in hs
+            if (Trim(h) != "")
+                a.Push(StrLower(Trim(h)))
     return a
+}
+
+PoolIsSignInHost(host) {
+    re := PoolSiteGet("signInHosts", "")
+    try return (re != "" && RegExMatch(host, "i)" re))
+    return false
 }
 
 PoolHostAllowed(host) {

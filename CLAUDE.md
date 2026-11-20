@@ -26,15 +26,33 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   call words, like Tasks): text in, text out, one-off or kept "conversations". Work account only (personal
   domains refused unless the testing switch is on). Never sends a prompt twice; its log never holds prompt
   or answer text. Protocol at the top of `copilot-pool.ahk`. Companion side: `app\copilot-pool-link.ahk`
-  (`PoolLink*`): starts it (tray > Copilot assist, ON by default), and the **💬 buttons** beside the helpers
-  (only while the pool is on): the prompt goes to a pool page, which appears as its own Copilot window
-  with the answer; you can keep chatting; it returns to the pool when you close it. 🤖, ➤ Ask and ⚡
+  (`PoolLink*`): starts it (tray > Copilot assist, ON by default), and the **💬 and ^ buttons** beside the
+  helpers (only while the pool is on): 💬 opens that helper's OWN Copilot window (a pool page, conversation
+  `helper-<id>`) with the full prompt; 💬 again sends into the same window/chat. ^ = follow-up into it with
+  only what the customer said since (like auto-assist, but on click). Both are orange while the window is
+  open (the pool lists open windows in its "state"). Each window remembers its own place/size; closing it
+  frees the page. One sign-in for all pages; "Sign out" switches to a new empty sign-in folder
+  (`profile-<n>`), single sign-on is OFF by default; one pool page kept ready by default. 🤖, ➤ Ask and ⚡
   auto-assist do NOT use the pool (they paste as before; their overhaul comes later).
   **Auto helpers** (`app\auto-helpers.ahk`, `Auto*`): helpers ticked "Auto-run during calls" (right-click,
-  saved in `live-captions.ini` [AutoHelpers]) each get a dedicated pool "board" page, shown in the pool's
-  Live helpers window; at a new call (New call / 3CX ring) they get the full prompt, then follow-ups with
-  the new customer text when the customer pauses.
-  Design and plans (live helpers board): `docs\COPILOT-POOL.md`.
+  saved in `live-captions.ini` [AutoHelpers]) work only in their own 💬 window, only while it is open
+  (no hidden pages, no combined window - removed 2026-11-20 at the owner's request). At a new call (New
+  call / 3CX ring) each opens its window by itself (remembered place, no focus: ask `quiet`) - or reuses
+  the open one - with a fresh chat + the full prompt; closed during the call = stays closed until the next
+  call. Then a follow-up with the new customer words when the customer pauses (like ^). 💬, ^ and auto share what the
+  window has seen (`poolLinkHelperSeen`, tied to the call). Auto prompts never replace text you typed in
+  the window (`respectDraft`). Design and plans: `docs\COPILOT-POOL.md`.
+- **Caption capture** (`ProcessSnapshot` + `Cap*` in `liveCaptionCompanion.ahk`): Live Captions rewrites
+  lines it already showed (punctuation, numbers "twenty three" -> "23", "road" -> "Rd.", sometimes many
+  seconds later). Only words added at the end are new speech (`CaptionNewAt`); a rewrite updates the
+  bubble in place, never adds it again. The debug trace logs `[caption]` events (line numbers, word
+  counts, how a line changed) - never the words.
+  **Chat sites are plug-in data**: `app\chat-sites\<id>.json` (README there) holds everything site-specific
+  (address, hosts, sign-in/out, account rule, selectors, `newChat` link|navigate, `answer` copy-button|settle).
+  The pool and `copilot-pool-worker.js` must stay site-agnostic - a new site (Claude, Gemini...) is a new
+  file, plus worker code only for a genuinely new newChat/answer kind. `devOnly` sites (Google AI Mode, for
+  testing without Copilot) load only in **dev mode** = `AppIsDev()` in `app-paths.ahk` (git working copy,
+  not installed; `[Dev] On=0` in live-captions.ini turns it off); picked in the pool window's "Chat site" list.
 - `app\debug-trace.ahk` (`Dbg*`) - one shared timing trace, `data\debug-trace.log`, written by the Companion,
   the pool and each pool page (ms timestamps; every button click, helper prompts, pool queue/dispatch,
   page steps with a snapshot of what the page shows). Never prompt/answer/caption text. Off by default (data\debug.ini [Trace] On=1 turns it on); tray toggle.

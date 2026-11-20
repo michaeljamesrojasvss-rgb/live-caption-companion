@@ -1,30 +1,30 @@
 ; ==============================================================================
-; auto-helpers.ahk  -  auto helpers: chosen helpers that run by themselves during a call
-;                      (prefix Auto*). Design: docs\COPILOT-POOL.md > "Auto helpers".
+; auto-helpers.ahk  -  auto helpers: chosen helpers that follow the call by themselves
+;                      in their own 💬 Copilot window (prefix Auto*).
 ;
 ; * Right-click a helper button > "Auto-run during calls". The choice is yours
 ;   (live-captions.ini [AutoHelpers] Ids=...), not stored in the helpers file.
 ;   Auto helpers show "⟳" in front of their name.
-; * Each auto helper has its own dedicated Copilot page in the Copilot pool (a
-;   "board page", separate from the 💬 pages), opened ahead of time. They are
-;   shown together in the pool's "Live helpers" window, side by side, each
-;   following its newest answer. You can type into them too.
-; * When a new call starts (New call, or a 3CX ring): every auto helper's page
-;   gets a fresh chat and the helper's full prompt (built like 🤖 builds it).
-;   Then, each time the customer pauses, what's new is sent - any change in the
-;   captions, even a short "thank you" or a corrected word, and the verified
-;   info if you changed it - as one follow-up.
+; * An auto helper only works in its own 💬 window (the one 💬 opens, see
+;   copilot-pool-link.ahk), and only while that window is open (💬 is orange).
+; * New call (New call or a 3CX ring): each auto helper opens its window by
+;   itself - at its remembered place, without taking the focus - with a fresh
+;   chat and the helper's full prompt (built like 🤖 builds it). A window that
+;   is already open gets the same fresh chat + full prompt. Close a window
+;   during the call and it stays closed until the next call (💬 opens it again).
+; * Then, each time the customer pauses: a follow-up with what's new - any NEW
+;   words in the captions (even a short "thank you"), and the verified info
+;   once you stop typing it. Like pressing ^ yourself. When Live Captions only
+;   polishes what was already sent (punctuation, a corrected word) nothing is
+;   sent; the polished text goes along with the next real follow-up.
 ;   Timing: [AutoHelpers] MinChars / QuietMs / MinGapMs (defaults below).
-; * Aggressive: the newest prompt always wins. If Copilot is still writing an
-;   answer, it is stopped and the new follow-up goes at once; whatever is in
-;   the helper page's input box is replaced. Only a follow-up waits until the
-;   call's first (full) prompt is in, so Copilot never misses the context.
-; * Only while the Copilot pool is on and ready, and only for the live call
-;   (not while reviewing an old one). Never sends a prompt twice. Nothing goes
-;   to logs.
-; * ⚡ auto-assist and ➤ Ask are retired (their buttons are gone); auto helpers replace them.
+; * One prompt at a time per window: the next waits until the previous one is
+;   in Copilot (Copilot then answers them in order). 💬, ^ and auto share what
+;   the window has seen (poolLinkHelperSeen), so nothing is sent twice.
+; * Only while the Copilot pool is ready, and only for the live call. Nothing
+;   goes to logs.
 ; Hooks: AutoInit() (after PoolLinkInit), AutoHelpersNewCall() (a new call),
-; AutoIsOn(id), AutoHelperMenu(action) (right-click), AutoOnPoolState(state)
+; AutoIsOn(id), AutoHelperMenu(action) (right-click)
 ; ==============================================================================
 
 AUTO_DEFAULTS := Map(
@@ -32,16 +32,11 @@ AUTO_DEFAULTS := Map(
     "QuietMs", 1200,                ; customer silent this long = they finished talking
     "MinGapMs", 0,                  ; at least this long between follow-ups to one helper
     "FollowUpPrompt", "UPDATE FROM THE LIVE CALL\n{{new}}\n\nKeep following your instructions above, and give your updated answer for the whole conversation so far.")
-AUTO_TITLE := "Live helpers"
-AUTO_ITEM_WINDOW := "Live helpers window (auto helpers)..."
-autoCallRef := ""                   ; the live call the auto helpers are working on ("" = none)
 autoState := Map()                  ; helper id -> see AutoFreshState()
-autoBoardSig := ""                  ; the board pages last sent to the pool
+autoOpenCall := ""                  ; the call started with New call / a ring: auto helpers open their windows for it
 
 AutoInit() {
     try {
-        if IsObject(assistTrayMenu)
-            assistTrayMenu.Add(AUTO_ITEM_WINDOW, (*) => AutoShowBoard(true))
         SetTimer(AutoTick, 300)
     } catch as err {
         AutoReport(err)
@@ -91,11 +86,10 @@ AutoHelperMenu(action) {
     try {
         id := Trim(action["id"])
         m := Menu()
-        item := "Auto-run during calls (Live helpers)"
+        item := "Auto-run during calls (opens its 💬 window at each new call)"
         m.Add(item, (*) => AutoToggle(id))
         if AutoIsOn(id)
             m.Check(item)
-        m.Add("Open the Live helpers window", (*) => AutoShowBoard(true))
         if !PoolLinkEnabled() {
             m.Add()
             m.Add("(needs the Copilot pool: tray > Copilot assist > Use the Copilot pool)", (*) => 0)
@@ -119,67 +113,32 @@ AutoToggle(id) {
             out .= (out = "" ? "" : ",") id
         IniWrite(out, MIC_INI, "AutoHelpers", "Ids")
         RebuildHelperButtons()                       ; the ⟳ mark
-        AutoSyncBoard(true)                          ; the pool opens / closes its page
-        if (on && IsObject(autoCallRef))             ; turned on during a call: it joins this call
-            autoState[id] := AutoFreshState()
-        statusText.Text := on ? "Status: auto helper on - it runs by itself during calls (Live helpers window)"
+        if autoState.Has(id)
+            autoState.Delete(id)
+        statusText.Text := on ? "Status: auto helper on - at each new call it opens its 💬 window and follows up by itself when the customer pauses"
             : "Status: auto helper off"
     } catch as err {
         AutoReport(err)
     }
 }
 
-; ---- the pool's board pages = the auto helpers ----
-AutoOnPoolState(state) {
-    global autoBoardSig
-    autoBoardSig := ""                               ; a (re)started pool needs the list again
-    AutoSyncBoard(true)
-}
-
-AutoSyncBoard(force := false) {
-    global autoBoardSig
-    try {
-        if !PoolLinkEnabled()
-            return
-        hwnd := PoolLinkWindow()
-        if !hwnd
-            return
-        pages := []
-        for a in AutoHelpers()
-            pages.Push(Map("key", Trim(a["id"]), "label", Trim(a["label"])))
-        msg := Map("t", "board", "hwnd", myGui.Hwnd, "title", AUTO_TITLE, "pages", pages)
-        sig := Json.Stringify(pages)
-        if (!force && sig == autoBoardSig)
-            return
-        if PoolLinkSend(hwnd, msg)
-            autoBoardSig := sig
-    } catch as err {
-        AutoReport(err)
-    }
-}
-
-AutoShowBoard(activate) {
-    try {
-        if !PoolLinkEnabled() {
-            PoolLinkShowWindow()                     ; offers to turn the pool on
-            return
-        }
-        if activate
-            DllCall("AllowSetForegroundWindow", "UInt", 0xFFFFFFFF)
-        if (hwnd := PoolLinkWindow())
-            PoolLinkSend(hwnd, Map("t", "boardshow", "activate", activate ? 1 : 0))
-        else if activate
-            statusText.Text := "Status: the Copilot pool is starting - try again in a moment"
-    } catch as err {
-        AutoReport(err)
-    }
-}
-
 ; ---- a call ----
-; needFull: the call's full prompt still has to go.  sentText / notesSent: what Copilot has seen.
-; sending: a prompt is on its way and not in Copilot yet.  seq: the newest prompt (older replies are ignored).
+; sending state per helper: why (trace), retryAt (a failed try waits), lastSend, notesSeen / notesTick
+; (the verified info and when you last changed it). What its window has seen is poolLinkHelperSeen.
 AutoFreshState() {
-    return {needFull: true, sentText: "", notesSent: "", sending: false, seq: 0, lastSend: 0, retryAt: 0, why: ""}
+    return {why: "", retryAt: 0, lastSend: 0, notesSeen: "", notesTick: 0, openedFor: ""}
+}
+
+AutoSt(id) {
+    if !autoState.Has(id)
+        autoState[id] := AutoFreshState()
+    return autoState[id]
+}
+
+; Words in the captions, ignoring punctuation and symbols (so "ok" -> "Ok." is not a new word)
+AutoWordCount(s) {
+    RegExReplace(RegExReplace(s, "[\p{P}\p{S}]+", " "), "\S+", "", &n)
+    return n
 }
 
 ; Trace: why a helper is (not) sending right now - written only when the reason changes
@@ -191,49 +150,70 @@ AutoWhy(st, label, why) {
         DbgTrace("auto", "'" label "' " why)
 }
 
-; A new call started (New call button, or a 3CX ring): every auto helper starts over on it
+; A new call started (New call button, or a 3CX ring). On the next ticks: auto helpers whose window is
+; closed open it (without taking the focus) with the full prompt; open windows notice they hold an
+; older call's chat and start a fresh one with the full prompt. A window you close during the call
+; stays closed until the next call.
 AutoHelpersNewCall() {
-    global autoCallRef, autoState
+    global autoState, autoOpenCall
     try {
-        if (!IsObject(currentCall) || !AutoHelpers().Length || !PoolLinkEnabled()) {
-            DbgTrace("auto", "new call signal - ignored (" (!IsObject(currentCall) ? "no call record"
-                : !AutoHelpers().Length ? "no auto helpers ticked" : "the Copilot pool is off") ")")
-            return
-        }
-        if (currentCall == autoCallRef) {            ; already working on this call
-            DbgTrace("auto", "new call signal - already on this call, nothing to do")
-            return
-        }
-        autoCallRef := currentCall
         autoState := Map()
-        names := ""
+        autoOpenCall := currentCall
+        open := "", closed := ""
         for a in AutoHelpers() {
-            autoState[Trim(a["id"])] := AutoFreshState()
-            names .= (names = "" ? "" : ", ") "'" Trim(a["label"]) "'"
+            if PoolLinkHelperOpen(a["id"])
+                open .= (open = "" ? "" : ", ") "'" Trim(a["label"]) "'"
+            else
+                closed .= (closed = "" ? "" : ", ") "'" Trim(a["label"]) "'"
         }
-        DbgTrace("auto", "NEW CALL - auto helpers start: " names " (pool " (PoolLinkUsable() ? "ready" : "NOT ready") ")")
-        AutoShowBoard(false)                         ; show the Live helpers without taking focus
+        DbgTrace("auto", "NEW CALL - fresh chat in the open windows: " (open = "" ? "none" : open)
+            "; opening: " (closed = "" ? "none" : closed))
     } catch as err {
         AutoReport(err)
     }
 }
 
-; Every 300 ms: send what each auto helper needs, when it's a good moment
+; This helper's window is closed and it should open it: a new call it hasn't opened for yet
+AutoShouldOpen(a) {
+    id := Trim(a["id"])
+    st := AutoSt(id)
+    return IsObject(autoOpenCall) && autoOpenCall == currentCall && !(st.openedFor == currentCall)
+        && A_TickCount >= st.retryAt && !PoolLinkHelperBusy(id)
+}
+
+; Opens the helper's 💬 window (at its remembered place, without taking the focus) with its full prompt
+AutoOpenWindow(a, full, notes) {
+    id := Trim(a["id"]), label := Trim(a["label"])
+    st := AutoSt(id)
+    st.openedFor := currentCall                      ; once per call: if you close it, it stays closed
+    st.lastSend := A_TickCount
+    text := AssistBuildFull(a, full)
+    snap := {text: full, notes: notes, call: currentCall}
+    DbgTrace("auto", "'" label "' NEW CALL - opening its 💬 window with the full prompt (" StrLen(text) " chars)")
+    h := {sent: PoolLinkHelperSent.Bind(id, snap), done: AutoDone.Bind(st, id, label, snap, true)}
+    if (PoolLinkAsk(text, label, PoolLinkHelperConv(id), true, h, true, Map("orNew", 1, "quiet", 1)) = "") {
+        st.openedFor := ""
+        st.retryAt := A_TickCount + 3000
+    } else {
+        try PoolLinkPaintHelpers()
+    }
+}
+
+; Every 300 ms: send what each auto helper's window needs, when it's a good moment
 AutoTick() {
-    global autoCallRef
-    static n := 0
+    static poolWait := false
     try {
-        n += 1
-        if (Mod(n, 7) = 0)                           ; ~2 s: helper names / auto list changed? (sends only changes)
-            AutoSyncBoard()
-        if !IsObject(autoCallRef)
+        if !IsObject(currentCall)
             return
-        static poolWait := false
-        if !(currentCall == autoCallRef) {           ; that call was finished or thrown away
-            DbgTrace("auto", "the call changed (finished / discarded) - auto helpers stop")
-            autoCallRef := ""
-            return
+        list := [], toOpen := []
+        for a in AutoHelpers() {
+            if PoolLinkHelperOpen(a["id"])
+                list.Push(a)
+            else if AutoShouldOpen(a)
+                toOpen.Push(a)
         }
+        if (!list.Length && !toOpen.Length)
+            return
         if !PoolLinkUsable() {                       ; starting / needs sign-in: wait
             if !poolWait
                 DbgTrace("auto", "waiting: the Copilot pool isn't ready ("
@@ -247,60 +227,73 @@ AutoTick() {
         full := AssistLiveTranscript()
         notes := Trim(currentCall.Get("agentNotes", ""), " `t`r`n")
         quiet := !(lastChatTick && A_TickCount - lastChatTick < AutoNum("QuietMs"))
-        for a in AutoHelpers() {
-            id := Trim(a["id"])
-            label := Trim(a["label"])
-            if !autoState.Has(id)
-                autoState[id] := AutoFreshState()
-            st := autoState[id]
-            if (st.sending && A_TickCount - st.lastSend > 60000) {  ; never heard back: don't stay stuck
-                DbgTrace("auto", "'" label "' no word from the pool for 60 s - not waiting any longer")
-                st.sending := false
-            }
-            if st.sending {
-                AutoWhy(st, label, "waiting: its prompt is on the way into Copilot")
-                continue
-            }
-            if (A_TickCount < st.retryAt) {
-                AutoWhy(st, label, "waiting to retry (its last try didn't reach Copilot)")
-                continue
-            }
-            if st.needFull {                             ; the call's first prompt: right away, no waiting
-                t := A_TickCount
-                text := AssistBuildFull(a, full)
-                AutoWhy(st, label, "")
-                DbgTrace("auto", "'" label "' FULL prompt built in " (A_TickCount - t) " ms (" StrLen(text) " chars, captions "
-                    StrLen(full) " chars) - sending")
-                AutoSend(a, st, text, true, full, notes)
-                continue
-            }
-            notesChanged := (notes !== st.notesSent)
-            if (full == st.sentText && !notesChanged) {
-                AutoWhy(st, label, "idle: nothing new in the captions")
-                continue
-            }
-            fresh := Trim(AutoNewText(st.sentText, full), " `t`r`n")
-            if (StrLen(fresh) < AutoNum("MinChars") && !notesChanged) {
-                AutoWhy(st, label, "waiting: fewer new chars than MinChars (" AutoNum("MinChars") ")")
-                continue
-            }
-            if !quiet {
-                AutoWhy(st, label, "waiting: the customer is still talking")
-                continue
-            }
-            if (A_TickCount - st.lastSend < AutoNum("MinGapMs")) {
-                AutoWhy(st, label, "waiting: MinGapMs since the last send")
-                continue
-            }
-            ; Copilot may still be writing the previous answer: the pool stops it and sends this at once
-            AutoWhy(st, label, "")
-            DbgTrace("auto", "'" label "' FOLLOW-UP: " StrLen(fresh) " new chars" (notesChanged ? " + verified info changed" : "")
-                ", customer quiet for " (lastChatTick ? A_TickCount - lastChatTick : -1) " ms - sending")
-            AutoSend(a, st, AutoFollowUp(fresh, notes, notesChanged), false, full, notes)
-        }
+        for a in toOpen
+            AutoOpenWindow(a, full, notes)
+        for a in list
+            AutoTickHelper(a, full, notes, quiet)
     } catch as err {
         AutoReport(err)
     }
+}
+
+AutoTickHelper(a, full, notes, quiet) {
+    id := Trim(a["id"])
+    label := Trim(a["label"])
+    if !autoState.Has(id)
+        autoState[id] := AutoFreshState()
+    st := autoState[id]
+    if (notes !== st.notesSeen) {                    ; you're typing the verified info: wait until you pause
+        st.notesSeen := notes
+        st.notesTick := A_TickCount
+    }
+    if PoolLinkHelperBusy(id) {
+        AutoWhy(st, label, "waiting: a prompt is on its way into its window")
+        return
+    }
+    if (A_TickCount < st.retryAt) {
+        AutoWhy(st, label, "waiting to retry (its last try didn't reach Copilot)")
+        return
+    }
+    seen := poolLinkHelperSeen.Has(id) ? poolLinkHelperSeen[id] : ""
+    if (!IsObject(seen) || !seen.HasOwnProp("call") || !(seen.call == currentCall)) {
+        ; its window holds an older call's chat, or nothing yet: a fresh chat with the full prompt
+        t := A_TickCount
+        text := AssistBuildFull(a, full)
+        AutoWhy(st, label, "")
+        DbgTrace("auto", "'" label "' FULL prompt (fresh chat for this call) built in " (A_TickCount - t) " ms ("
+            StrLen(text) " chars, captions " StrLen(full) " chars) - sending")
+        AutoSend(a, st, text, true, {text: full, notes: notes, call: currentCall})
+        return
+    }
+    notesChanged := (notes !== seen.notes) && (A_TickCount - st.notesTick >= AutoNum("QuietMs"))
+    if (full !== seen.text && !notesChanged && AutoWordCount(full) <= AutoWordCount(seen.text)) {
+        ; Live Captions only polished what Copilot already has (punctuation, a corrected word):
+        ; it goes along with the next real follow-up
+        seen.text := full
+        AutoWhy(st, label, "idle: captions only corrected (no new words) - not sent")
+        return
+    }
+    if (full == seen.text && !notesChanged) {
+        AutoWhy(st, label, "idle: nothing new in the captions")
+        return
+    }
+    fresh := Trim(AutoNewText(seen.text, full), " `t`r`n")
+    if (StrLen(fresh) < AutoNum("MinChars") && !notesChanged) {
+        AutoWhy(st, label, "waiting: fewer new chars than MinChars (" AutoNum("MinChars") ")")
+        return
+    }
+    if !quiet {
+        AutoWhy(st, label, "waiting: the customer is still talking")
+        return
+    }
+    if (A_TickCount - st.lastSend < AutoNum("MinGapMs")) {
+        AutoWhy(st, label, "waiting: MinGapMs since the last send")
+        return
+    }
+    AutoWhy(st, label, "")
+    DbgTrace("auto", "'" label "' FOLLOW-UP: " StrLen(fresh) " new chars" (notesChanged ? " + verified info changed" : "")
+        ", customer quiet for " (lastChatTick ? A_TickCount - lastChatTick : -1) " ms - sending")
+    AutoSend(a, st, AutoFollowUp(fresh, notes, notesChanged), false, {text: full, notes: notes, call: currentCall})
 }
 
 ; What changed in the captions since Copilot last saw them: the new text at the end, or - when Live
@@ -329,50 +322,35 @@ AutoFollowUp(fresh, notes, notesChanged) {
     return NormalizeNewlines(StrReplace(tpl, "{{new}}", part))
 }
 
-AutoSend(a, st, text, full, transcript, notes) {
-    st.seq += 1
-    st.sending := true
+; Into the helper's open 💬 window, without bringing it to the front. snap = what the window will
+; have seen once this prompt is in (stored when the pool says it's in - shared with 💬 and ^).
+AutoSend(a, st, text, newChat, snap) {
+    id := Trim(a["id"]), label := Trim(a["label"])
     st.lastSend := A_TickCount
-    call := autoCallRef
-    h := {sent: AutoSent.Bind(st, st.seq, call, transcript, notes), done: AutoDone.Bind(st, st.seq, call, Trim(a["label"]))}
-    id := PoolLinkAsk(text, Trim(a["label"]), "", full, h, false, Map("page", Trim(a["id"])))
-    if (id = "") {
-        st.sending := false
+    h := {sent: PoolLinkHelperSent.Bind(id, snap), done: AutoDone.Bind(st, id, label, snap, false)}
+    if (PoolLinkAsk(text, label, PoolLinkHelperConv(id), newChat, h, false, Map("respectDraft", 1)) = "")   ; never over your own typing
         st.retryAt := A_TickCount + 3000
-    }
 }
 
-; The prompt is in Copilot (its answer may still be coming): from now on a newer follow-up may replace it
-AutoSent(st, seq, call, transcript, notes, m) {
-    if (seq != st.seq || !(call == autoCallRef))     ; an older prompt / a newer call already started
-        return
-    DbgTrace("auto", "prompt #" seq " is in Copilot, " (A_TickCount - st.lastSend) " ms after sending")
-    st.sending := false
-    st.needFull := false
-    st.sentText := transcript
-    st.notesSent := notes
-}
-
-AutoDone(st, seq, call, label, m) {
-    DbgTrace("auto", "'" label "' prompt #" seq " finished: " (m.Get("ok", 0) ? "answered" : m.Get("kind", "") " - " m.Get("error", ""))
-        ", " (A_TickCount - st.lastSend) " ms" (seq != st.seq ? " (an older prompt - ignored)" : ""))
-    if (seq != st.seq)                               ; an older prompt (replaced by a newer one)
-        return
-    st.sending := false
+AutoDone(st, id, label, snap, opening, m) {
+    DbgTrace("auto", "'" label "' prompt finished: " (m.Get("ok", 0) ? "answered" : m.Get("kind", "") " - " m.Get("error", ""))
+        ", " (A_TickCount - st.lastSend) " ms after sending")
     if m.Get("ok", 0)
         return
     kind := m.Get("kind", "")
-    if (kind = "replaced")
-        return
-    if (kind = "lost" && call == autoCallRef) {      ; its page started over: send everything again
-        st.needFull := true
-        st.retryAt := 0
+    if (kind = "lost") {                             ; its chat started over (page reloaded): the full prompt again
+        if poolLinkHelperSeen.Has(id)
+            poolLinkHelperSeen.Delete(id)
         return
     }
-    if PoolLinkNeverSent(kind)                       ; never reached Copilot: try again in a moment
+    if PoolLinkNeverSent(kind) {                     ; never reached Copilot: try again in a moment
         st.retryAt := A_TickCount + 3000
-    else
-        AssistLog("auto helper '" label "': " kind)
+        if (opening && kind != "busy")               ; its window didn't open: open it again ("busy" = no room: give up)
+            st.openedFor := ""
+        return
+    }
+    poolLinkHelperSeen[id] := snap                   ; it may have reached Copilot: never send it again
+    AssistLog("auto helper '" label "': " kind)
 }
 
 AutoReport(err) {

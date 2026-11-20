@@ -37,6 +37,7 @@ poolLinkHelperSeen := Map()    ; helper id -> {text, notes, call}: the live call
                                ; (for ^ and auto helpers; call = which call that chat is about)
 POOLLINK_RESTART := "Restart the Copilot pool"
 POOLLINK_SIGNOUT := "Sign out of Copilot and restart the pool"
+POOLLINK_MEMORY := "Built-in browser memory (Copilot pool, Screen ask)..."
 
 PoolLinkInit() {
     try {
@@ -47,6 +48,7 @@ PoolLinkInit() {
             assistTrayMenu.Add(POOLLINK_WINDOW, (*) => PoolLinkShowWindow())
             assistTrayMenu.Add(POOLLINK_RESTART, (*) => PoolLinkRestart())
             assistTrayMenu.Add(POOLLINK_SIGNOUT, (*) => PoolLinkSignOut())
+            assistTrayMenu.Add(POOLLINK_MEMORY, (*) => PoolLinkMemoryReport())
             if PoolLinkEnabled()
                 assistTrayMenu.Check(POOLLINK_USE)
         }
@@ -55,6 +57,8 @@ PoolLinkInit() {
         if PoolLinkEnabled()
             PoolLinkRestart(false)
         SetTimer(PoolLinkWatch, 3000)
+        SetTimer(PoolLinkSweep, -20000)           ; built-in browsers left behind by closed apps: ended
+        SetTimer(PoolLinkSweep, 300000)           ; ... and checked again every 5 min
     } catch as err {
         PoolLinkReport(err)
     }
@@ -577,6 +581,47 @@ PoolLinkSend(hwnd, obj) {
         return true
     }
     return false
+}
+
+; The Companion is closing: the pool goes too (it would close by itself a minute later - see
+; PoolOwnerCheck - unless Screen ask, run on its own, still uses it)
+PoolLinkShutdown() {
+    try {
+        if (hwnd := PoolLinkWindow())
+            PoolLinkSend(hwnd, Map("t", "quit"))
+    }
+}
+
+; Ends built-in browsers (WebView2) of our apps whose app is gone (webview-guard.ahk)
+PoolLinkSweep() {
+    try {
+        freed := 0
+        if (n := WvgSweepOrphans(&freed)) {
+            AssistLog("ended " n " leftover built-in browser(s) of closed apps (" freed " MB)")
+            statusText.Text := "Status: freed " freed " MB - a built-in browser of a closed app was still running"
+        }
+    } catch as err {
+        PoolLinkReport(err)
+    }
+}
+
+; Tray > Copilot assist > Built-in browser memory: who uses how much, and a way to end leftovers
+PoolLinkMemoryReport() {
+    try {
+        txt := WvgReport()
+        if InStr(txt, "LEFTOVER") {
+            if (MsgBox(txt "`n`nEnd the leftovers now?", "Built-in browser memory", "YesNo Icon!") = "Yes") {
+                freed := 0
+                n := WvgSweepOrphans(&freed)
+                MsgBox("Ended " n " leftover(s), " freed " MB freed.", "Built-in browser memory", "Iconi")
+            }
+        } else {
+            MsgBox(txt "`n`n(Each app checks its own memory every 30 s and trims it; the pool closes by itself"
+                . " a minute after no app uses it.)", "Built-in browser memory", "Iconi")
+        }
+    } catch as err {
+        PoolLinkReport(err)
+    }
 }
 
 PoolLinkReport(err) {

@@ -18,7 +18,9 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include updates.ahk
 #Include import-merge.ahk
 #Include main-helper-host.ahk
+#Include screen-ask-link.ahk       ; Screen ask (own app, off by default): tray > Screen ask
 #Include tasks-link.ahk
+#Include webview-guard.ahk         ; keeps the built-in browsers (WebView2) in check
 #Include copilot-pool-link.ahk
 #Include auto-helpers.ahk
 
@@ -292,6 +294,7 @@ NotesResizeInit()
 UpdInit()
 MergeInit()
 MainHelperInit()
+SaLinkInit()                       ; after MainHelperInit: its tray menu goes right below
 TaskLinkInit()
 DbgInitCompanion()                 ; debug trace: tray items + logs every button click
 PoolLinkInit()                     ; after AssistInit: adds to its tray menu
@@ -330,7 +333,7 @@ HandleExit(*) {
         OnMessage(0x0232, WindowMoveEnded, 0)
     }
     ; Each step on its own, so one failing can't skip saving the call
-    for step in [CallerShutdown, QAlertShutdown, MainHelperShutdown, SaveWindowPos, StopMicEngine, SaveNotes, FinishCurrentCall]
+    for step in [CallerShutdown, QAlertShutdown, MainHelperShutdown, SaLinkShutdown, PoolLinkShutdown, SaveWindowPos, StopMicEngine, SaveNotes, FinishCurrentCall]
         ErrRun(step)
     ErrLogShutdown()
 }

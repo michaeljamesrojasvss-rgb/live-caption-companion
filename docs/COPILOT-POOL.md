@@ -122,7 +122,23 @@ Kept conversations are for the ➤ Ask / ⚡ overhaul and the 💬 windows (auto
 ## Messages (WM_COPYDATA, tag `0x3CC3`, JSON text)
 
 The full list is at the top of `app\copilot-pool.ahk`. In short:
-- **app → pool:** `ask {id, hwnd, prompt, label, conversation, newChat, stream, show}`,
+- **Images:** an ask may carry `images` (PNG/JPEG file paths in `%LOCALAPPDATA%\CaptionCompanion\pool-images`
+  only, `ImageMaxMB`), attached before the prompt; used by Screen ask (`docs\SCREEN-ASK.md`). Sites need an
+  `images` block in their chat-sites file.
+- **Memory guard (2026-11-21, owner: "something has to keep it in check"):** the pool once stayed running
+  (~700 MB, no tray icon) after every app was closed. Now: it closes itself when no app (Companion, Screen
+  ask) and none of its windows use it for `NoAppQuitSec` (60), and the Companion quits it on exit. Every
+  `MemAuditSec` (30) it measures its whole engine (`webview-guard.ahk`), puts hidden pages idle for
+  `IdleLowMemSec` into WebView2's low-memory level, reloads an idle page whose script memory is over
+  `PageMaxMB` (400), and over `TotalMaxMB` (1500) reloads the biggest idle page and closes idle spares.
+  Your open Copilot windows are never touched. Leftover engines of closed apps are ended at start.
+- **Reserved conversations:** `reserve {conversation}` = an app's OWN page, always loaded and warm, never
+  lent out (Screen ask uses `screen-ask`). The app re-sends it every few seconds (a restarted pool forgets).
+- **Never stuck:** a page that fails to open is retried (2, 4, 8 ... 30 s apart); after 3 failures in a row,
+  or if the engine itself failed, a new browser engine is started (every 15 s until it works). Seen
+  2026-11-20: at a Companion start the restarted pool's page got "Operation aborted" (the old copy's
+  engine was still closing) and the pool sat with no page at all.
+- **app → pool:** `ask {id, hwnd, prompt, label, conversation, newChat, stream, show, images}`, `reserve {conversation}`,
   `cancel {id}`, `end {conversation}`, `status {hwnd}`, `show`, `signin`, `quit`.
 - **pool → app:** `queued`, `sent` (the prompt is in Copilot: never resend after this), `chunk`
   (live text, if `stream`), `done {ok, kind, text, markdown, error, ms}`, `state`.

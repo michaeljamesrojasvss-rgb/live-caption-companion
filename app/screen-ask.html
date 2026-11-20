@@ -1,0 +1,385 @@
+<!doctype html>
+<!--
+  screen-ask.html - the "frozen screen" of Screen ask (screen-ask.ahk). Runs in a WebView2 that covers every
+  monitor. One CSS pixel = one screen pixel (the app sets RasterizationScale 1), so the screenshot is shown 1:1;
+  the toolbar and the ask box are scaled by hand to the monitor they're on.
+
+  From the app (JSON strings): shot {src, w, h, monitors:[{x,y,w,h,scale,primary}], cursor:{x,y}, color, tool,
+                               closeUps, maxCloseUps, fullMaxSide, lineWidth} | reset
+  To the app (JSON strings):   ready | drawn | cancel | hide | tool {tool} | settings | error {msg} |
+                               send {question, marks, screens, images:[{kind, marks, w, h, b64}]} | copy {b64}
+  Nothing here talks to the internet: the page and the screenshot come from the app's own local folder.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Screen ask</title>
+<style>
+  :root { --sig: #22D3EE; --panel: #111827; --panel2: #1f2937; --text: #f9fafb; --muted: #9ca3af; --accent: #22D3EE; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; user-select: none;
+    font-family: "Segoe UI", system-ui, sans-serif; color: var(--text); }
+  #shot, #ink { position: absolute; left: 0; top: 0; display: block; }
+  #ink { cursor: crosshair; touch-action: none; }
+  .frame { position: absolute; box-sizing: border-box; pointer-events: none;
+    border: 3px solid var(--sig); box-shadow: inset 0 0 0 1px rgba(0,0,0,.45), inset 0 0 24px rgba(34,211,238,.35);
+    animation: glow 1.6s ease-in-out infinite alternate; }
+  @keyframes glow { from { opacity: .55; } to { opacity: 1; } }
+  .ui { position: absolute; transform-origin: top left; }
+  #bar { display: flex; gap: 4px; align-items: center; padding: 6px; border-radius: 14px;
+    background: rgba(17,24,39,.94); box-shadow: 0 8px 28px rgba(0,0,0,.55); border: 1px solid rgba(34,211,238,.45); }
+  #bar button, #ask button { font: inherit; color: var(--text); background: transparent; border: 0; cursor: pointer;
+    border-radius: 9px; height: 36px; padding: 0 10px; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+  #bar button:hover, #ask button:hover { background: var(--panel2); }
+  #bar button.on { background: rgba(34,211,238,.18); box-shadow: inset 0 0 0 1px var(--accent); }
+  #bar .sep { width: 1px; height: 24px; background: #374151; margin: 0 4px; }
+  #bar .ico { font-size: 17px; width: 20px; text-align: center; }
+  #hint { padding: 7px 14px; border-radius: 999px; background: rgba(17,24,39,.9); font-size: 13px; color: #e5e7eb;
+    white-space: nowrap; pointer-events: none; border: 1px solid rgba(255,255,255,.12); }
+  #ask { width: 460px; padding: 10px; border-radius: 14px; background: rgba(17,24,39,.97);
+    box-shadow: 0 10px 32px rgba(0,0,0,.6); border: 1px solid rgba(34,211,238,.55); display: none; }
+  #ask textarea { width: 100%; box-sizing: border-box; height: 64px; resize: none; border-radius: 9px; border: 1px solid #374151;
+    background: #0b1220; color: var(--text); font: 14px "Segoe UI", system-ui, sans-serif; padding: 8px 10px; outline: none; }
+  #ask textarea:focus { border-color: var(--accent); }
+  #ask .row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+  #ask .grow { flex: 1; font-size: 12px; color: var(--muted); }
+  #ask button.send { background: var(--accent); color: #062a33; font-weight: 600; }
+  #ask button.send:hover { background: #67e8f9; }
+  #busy { padding: 10px 16px; border-radius: 12px; background: rgba(17,24,39,.94); font-size: 14px; display: none; }
+</style>
+</head>
+<body>
+<img id="shot" alt="" draggable="false">
+<canvas id="ink"></canvas>
+<div id="frames"></div>
+<div id="bar" class="ui" style="display:none">
+  <button id="tPen" title="Draw freely around something (P)"><span class="ico">✎</span>Draw</button>
+  <button id="tBox" title="Draw a box (B)"><span class="ico">▭</span>Box</button>
+  <button id="tOval" title="Draw an oval (O)"><span class="ico">◯</span>Oval</button>
+  <span class="sep"></span>
+  <button id="bUndo" title="Remove the last mark (Ctrl+Z, or right-click)"><span class="ico">↶</span>Undo</button>
+  <button id="bClear" title="Remove every mark"><span class="ico">⌫</span>Clear</button>
+  <span class="sep"></span>
+  <button id="bWhole" title="Ask about the whole screen, without marking anything"><span class="ico">🖥</span>Whole screen</button>
+  <button id="bSettings" title="Screen ask settings (shortcut, mark colour, prompt)"><span class="ico">⚙</span></button>
+  <button id="bCancel" title="Close without asking (Esc)"><span class="ico">✕</span>Cancel</button>
+</div>
+<div id="hint" class="ui" style="display:none">Draw around what you want to ask about · right-click = undo · Esc = cancel</div>
+<div id="ask" class="ui">
+  <textarea id="q" placeholder="Ask about what you marked… (empty = explain it)"></textarea>
+  <div class="row">
+    <span class="grow" id="askHint">Enter = send · Shift+Enter = new line · you can mark more</span>
+    <button id="bCopy" title="Copy the marked screenshot to the clipboard instead of sending it">Copy image</button>
+    <button id="bSend" class="send" title="Send to Copilot (Enter)">Send ➤</button>
+  </div>
+</div>
+<div id="busy" class="ui">Preparing the images…</div>
+
+<script>
+(() => {
+  const wv = window.chrome && window.chrome.webview;
+  // every message says which capture it's about (shot.id), so a late one can't close a newer capture
+  const post = m => { try { if (m.shot === undefined && shot) m.shot = shot.id; wv.postMessage(JSON.stringify(m)); } catch {} };
+  const $ = id => document.getElementById(id);
+  const img = $("shot"), ink = $("ink"), ctx = ink.getContext("2d");
+  const bar = $("bar"), hint = $("hint"), ask = $("ask"), q = $("q"), busy = $("busy");
+
+  let shot = null;          // the current screenshot and its settings (null = nothing on screen)
+  let marks = [];           // {tool, pts:[[x,y]...] | box:{x0,y0,x1,y1}, mon, lw}
+  let cur = null;           // the mark being drawn
+  let tool = "pen";
+  let asking = false, sending = false, whole = false;
+
+  // ---------- monitors ----------
+  const monAt = (x, y) => {
+    if (!shot) return null;
+    for (const m of shot.monitors) if (x >= m.x && y >= m.y && x < m.x + m.w && y < m.y + m.h) return m;
+    let best = shot.monitors[0], bd = Infinity;      // in a gap between monitors: the nearest one
+    for (const m of shot.monitors) {
+      const dx = Math.max(m.x - x, 0, x - (m.x + m.w)), dy = Math.max(m.y - y, 0, y - (m.y + m.h)), d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = m; }
+    }
+    return best;
+  };
+  const place = (el, x, y, s) => { el.style.left = Math.round(x) + "px"; el.style.top = Math.round(y) + "px"; el.style.transform = "scale(" + s + ")"; };
+  const sizeOf = el => { const d = el.style.display; if (getComputedStyle(el).display === "none") el.style.display = el === bar ? "flex" : "block";
+    const r = { w: el.offsetWidth, h: el.offsetHeight }; el.style.display = d; return r; };
+
+  // ---------- marks ----------
+  const bboxOf = m => {
+    if (m.box) return { x: Math.min(m.box.x0, m.box.x1), y: Math.min(m.box.y0, m.box.y1), w: Math.abs(m.box.x1 - m.box.x0), h: Math.abs(m.box.y1 - m.box.y0) };
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [x, y] of m.pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+    return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  };
+  function drawMark(c, m, color) {
+    c.save();
+    c.strokeStyle = color; c.lineWidth = m.lw; c.lineCap = "round"; c.lineJoin = "round";
+    c.shadowColor = "rgba(0,0,0,.45)"; c.shadowBlur = m.lw;          // stays visible on light and dark screens
+    c.beginPath();
+    if (m.tool === "pen") {
+      const p = m.pts;
+      c.moveTo(p[0][0], p[0][1]);
+      for (let i = 1; i < p.length - 1; i++) {                       // smoothed: curves through the midpoints
+        const mx = (p[i][0] + p[i + 1][0]) / 2, my = (p[i][1] + p[i + 1][1]) / 2;
+        c.quadraticCurveTo(p[i][0], p[i][1], mx, my);
+      }
+      const last = p[p.length - 1]; c.lineTo(last[0], last[1]);
+    } else {
+      const b = bboxOf(m);
+      if (m.tool === "box") c.rect(b.x, b.y, b.w, b.h);
+      else c.ellipse(b.x + b.w / 2, b.y + b.h / 2, Math.max(1, b.w / 2), Math.max(1, b.h / 2), 0, 0, Math.PI * 2);
+    }
+    c.stroke();
+    c.restore();
+  }
+  function drawNumber(c, m, n, color) {
+    const b = bboxOf(m), s = m.mon ? m.mon.scale : 1, r = 13 * s;
+    const x = Math.max(r, b.x - r * 0.4), y = Math.max(r, b.y - r * 0.4);
+    c.save();
+    c.fillStyle = color; c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+    c.lineWidth = 2 * s; c.strokeStyle = "#fff"; c.stroke();
+    c.fillStyle = "#fff"; c.font = "bold " + Math.round(15 * s) + "px Segoe UI, sans-serif";
+    c.textAlign = "center"; c.textBaseline = "middle"; c.fillText(String(n), x, y + s);
+    c.restore();
+  }
+  function drawAll(c, list, color) {
+    list.forEach(m => drawMark(c, m, color));
+    if (list.length > 1) list.forEach((m, i) => drawNumber(c, m, i + 1, color));
+  }
+  function redraw() {
+    ctx.clearRect(0, 0, ink.width, ink.height);
+    if (!shot) return;
+    drawAll(ctx, cur ? marks.concat([cur]) : marks, shot.color);
+  }
+
+  // ---------- drawing with the mouse ----------
+  ink.addEventListener("contextmenu", e => e.preventDefault());
+  ink.addEventListener("pointerdown", e => {
+    if (!shot || sending) return;
+    if (e.button === 2) { undo(); return; }
+    if (e.button !== 0) return;
+    ink.setPointerCapture(e.pointerId);
+    const mon = monAt(e.offsetX, e.offsetY), lw = (shot.lineWidth || 4) * (mon ? mon.scale : 1);
+    cur = tool === "pen" ? { tool, pts: [[e.offsetX, e.offsetY]], mon, lw }
+                         : { tool, box: { x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY }, mon, lw };
+    hint.style.display = "none";
+  });
+  ink.addEventListener("pointermove", e => {
+    if (!cur) return;
+    if (cur.pts) {
+      const l = cur.pts[cur.pts.length - 1];
+      if (Math.abs(l[0] - e.offsetX) + Math.abs(l[1] - e.offsetY) >= 2) cur.pts.push([e.offsetX, e.offsetY]);
+    } else { cur.box.x1 = e.offsetX; cur.box.y1 = e.offsetY; }
+    requestAnimationFrame(redraw);
+  });
+  const endMark = () => {
+    if (!cur) return;
+    const m = cur; cur = null;
+    const b = bboxOf(m), min = 8 * (m.mon ? m.mon.scale : 1);
+    if (b.w < min && b.h < min) { redraw(); if (!marks.length && !asking) hint.style.display = ""; return; }   // a click, not a mark
+    marks.push(m);
+    redraw();
+    whole = false;
+    showAsk(b, m.mon);
+  };
+  ink.addEventListener("pointerup", endMark);
+  ink.addEventListener("pointercancel", endMark);
+
+  function undo() {
+    if (cur) { cur = null; redraw(); return; }
+    if (!marks.length) return;
+    marks.pop(); redraw();
+    if (!marks.length && !whole) hideAsk();
+    else if (marks.length) { const m = marks[marks.length - 1]; showAsk(bboxOf(m), m.mon); }
+  }
+  function clearMarks() { cur = null; marks = []; redraw(); if (!whole) hideAsk(); }
+
+  function setTool(t) {
+    tool = t;
+    for (const [id, name] of [["tPen", "pen"], ["tBox", "box"], ["tOval", "oval"]]) $(id).classList.toggle("on", name === t);
+    post({ t: "tool", tool: t });
+  }
+
+  // ---------- the ask box: next to the newest mark, on its monitor ----------
+  function showAsk(b, mon) {
+    mon = mon || monAt(b.x, b.y);
+    const s = mon.scale, sz = sizeOf(ask), w = sz.w * s, h = sz.h * s, gap = 14 * s, pad = 10 * s;
+    let x = Math.min(Math.max(b.x, mon.x + pad), mon.x + mon.w - w - pad);
+    let y = b.y + b.h + gap;                                          // below the mark
+    if (y + h > mon.y + mon.h - pad) y = b.y - h - gap;               // no room: above it
+    if (y < mon.y + pad) y = Math.min(mon.y + mon.h - h - pad, Math.max(mon.y + pad, b.y + b.h - h)); // still no room: inside
+    place(ask, x, y, s);
+    q.placeholder = marks.length ? "Ask about what you marked… (empty = explain it)" : "Ask about your screen… (empty = explain what's on it)";
+    ask.style.display = "block";
+    asking = true;
+    setTimeout(() => q.focus(), 0);
+  }
+  function hideAsk() { ask.style.display = "none"; asking = false; }
+  function askWhole() {
+    whole = true;
+    const mon = monAt(shot.cursor.x, shot.cursor.y), sz = sizeOf(ask);
+    showAsk({ x: mon.x + (mon.w - sz.w * mon.scale) / 2, y: mon.y + mon.h * 0.35, w: 0, h: 0 }, mon);
+    hint.style.display = "none";
+  }
+
+  // ---------- the images that go to the AI ----------
+  // 1: every monitor with the marks drawn on (context), made smaller if huge.
+  // 2..: a close-up of each marked area (marks close together share one), so small text stays readable.
+  function canvas(w, h) { const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(w)); c.height = Math.max(1, Math.round(h)); return c; }
+  async function b64Of(c) {
+    const blob = await new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error("couldn't make the image")), "image/png"));
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let s = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+  function marked(S, M) {                 // the whole screen with the marks, full size
+    const c = canvas(S.w, S.h), x = c.getContext("2d");
+    x.fillStyle = "#000"; x.fillRect(0, 0, c.width, c.height);
+    x.drawImage(img, 0, 0);
+    drawAll(x, M, S.color);
+    return c;
+  }
+  function shrink(src, maxSide) {
+    const k = maxSide > 0 ? Math.min(1, maxSide / Math.max(src.width, src.height)) : 1;
+    if (k >= 1) return src;
+    const c = canvas(src.width * k, src.height * k), x = c.getContext("2d");
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+    x.drawImage(src, 0, 0, c.width, c.height);
+    return c;
+  }
+  function cropBoxes(S, M) {
+    const inter = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    const union = (a, b) => { const x = Math.min(a.x, b.x), y = Math.min(a.y, b.y);
+      return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y, ids: a.ids.concat(b.ids), mon: a.mon === b.mon ? a.mon : null }; };
+    let boxes = M.map((m, i) => {
+      const b = bboxOf(m), s = m.mon ? m.mon.scale : 1;
+      const pad = Math.max(48 * s, 0.35 * Math.max(b.w, b.h)), min = 360 * s;
+      let w = Math.max(b.w + 2 * pad, min), h = Math.max(b.h + 2 * pad, min * 0.6);
+      return { x: b.x + b.w / 2 - w / 2, y: b.y + b.h / 2 - h / 2, w, h, ids: [i + 1], mon: m.mon };
+    });
+    for (let merged = true; merged;) {                                  // marks close together: one close-up
+      merged = false;
+      outer: for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++)
+        if (inter(boxes[i], boxes[j])) { boxes[i] = union(boxes[i], boxes[j]); boxes.splice(j, 1); merged = true; break outer; }
+    }
+    if (boxes.length > Math.max(1, S.maxCloseUps || 3)) boxes = [boxes.reduce(union)];
+    return boxes.map(b => {                                             // inside its monitor (or the whole picture)
+      const r = b.mon || { x: 0, y: 0, w: S.w, h: S.h };
+      const w = Math.min(b.w, r.w), h = Math.min(b.h, r.h);
+      const x = Math.min(Math.max(b.x, r.x), r.x + r.w - w), y = Math.min(Math.max(b.y, r.y), r.y + r.h - h);
+      return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h), ids: b.ids.sort((a, z) => a - z) };
+    });
+  }
+  // S, M = the screenshot and the marks as they were when Send was pressed (the page may reset meanwhile)
+  async function compose(S, M, withCrops) {
+    const full = marked(S, M), out = [];
+    const boxes = withCrops && M.length && S.closeUps ? cropBoxes(S, M) : [];
+    const f = shrink(full, S.fullMaxSide || 0);
+    out.push({ kind: "full", marks: M.map((_, i) => i + 1), w: f.width, h: f.height, b64: await b64Of(f) });
+    for (const b of boxes) {
+      const c = canvas(b.w, b.h);
+      c.getContext("2d").drawImage(full, b.x, b.y, b.w, b.h, 0, 0, b.w, b.h);
+      out.push({ kind: "crop", marks: b.ids, w: c.width, h: c.height, b64: await b64Of(c) });
+    }
+    return out;
+  }
+
+  async function send() {
+    if (!shot || sending) return;
+    sending = true;
+    const question = q.value.trim(), S = shot, M = marks.slice(), nMarks = M.length, screens = S.monitors.length;
+    post({ t: "hide" });                                     // the screen comes back at once; the images are made meanwhile
+    try {
+      const images = await compose(S, M, true);
+      post({ t: "send", shot: S.id, question, marks: nMarks, screens, images });
+    } catch (e) {
+      post({ t: "error", shot: S.id, msg: "couldn't make the images: " + ((e && e.message) || e) });
+    }
+    if (shot === S) reset();                                 // (a newer capture may be on screen by now)
+  }
+  async function copyImage() {
+    if (!shot || sending) return;
+    sending = true;
+    const S = shot;
+    busy.textContent = "Copying…"; showBusy();
+    try { const [f] = await compose(S, marks.slice(), false); post({ t: "copy", shot: S.id, b64: f.b64 }); }
+    catch (e) { post({ t: "error", shot: S.id, msg: "couldn't make the image: " + ((e && e.message) || e) }); }
+    if (shot === S) reset();
+  }
+  function showBusy() { const mon = monAt(shot.cursor.x, shot.cursor.y); busy.style.display = "block"; place(busy, mon.x + 20 * mon.scale, mon.y + 20 * mon.scale, mon.scale); }
+  function cancel() { post({ t: "cancel" }); reset(); }
+
+  function reset() {
+    shot = null; marks = []; cur = null; sending = false; whole = false;
+    hideAsk(); q.value = "";
+    bar.style.display = "none"; hint.style.display = "none"; busy.style.display = "none";
+    $("frames").innerHTML = "";
+    ctx.clearRect(0, 0, ink.width, ink.height);
+    img.removeAttribute("src");                              // frees the screenshot
+  }
+
+  // ---------- buttons and keys (everything has a mouse way) ----------
+  $("tPen").onclick = () => setTool("pen");
+  $("tBox").onclick = () => setTool("box");
+  $("tOval").onclick = () => setTool("oval");
+  $("bUndo").onclick = undo;
+  $("bClear").onclick = clearMarks;
+  $("bWhole").onclick = askWhole;
+  $("bSettings").onclick = () => { post({ t: "settings" }); cancel(); };
+  $("bCancel").onclick = cancel;
+  $("bSend").onclick = send;
+  $("bCopy").onclick = copyImage;
+  q.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  document.addEventListener("keydown", e => {
+    if (!shot) return;
+    if (e.key === "Escape") { e.preventDefault(); cancel(); return; }
+    if (e.target === q) return;                              // typing a question: keys are text
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); return; }
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    const k = e.key.toLowerCase();
+    if (k === "p") setTool("pen"); else if (k === "b") setTool("box"); else if (k === "o") setTool("oval");
+    else if (e.key === "Enter" && asking) send();
+  });
+
+  // ---------- messages from the app ----------
+  wv && wv.addEventListener("message", async e => {
+    let m = e.data;
+    if (typeof m === "string") { try { m = JSON.parse(m); } catch { return; } }
+    if (!m) return;
+    if (m.t === "reset") { reset(); return; }
+    if (m.t !== "shot") return;
+    reset();
+    try {
+      img.src = m.src;
+      await img.decode();
+      shot = m;
+      shot.closeUps = !!m.closeUps;
+      img.width = m.w; img.height = m.h;
+      ink.width = m.w; ink.height = m.h;
+      ink.style.width = m.w + "px"; ink.style.height = m.h + "px";
+      const fr = $("frames");
+      for (const mon of m.monitors) {
+        const d = document.createElement("div"); d.className = "frame";
+        Object.assign(d.style, { left: mon.x + "px", top: mon.y + "px", width: mon.w + "px", height: mon.h + "px" });
+        fr.appendChild(d);
+      }
+      setTool(["pen", "box", "oval"].includes(m.tool) ? m.tool : "pen");
+      // the toolbar and the hint: top middle of the monitor the mouse is on
+      const mon = monAt(m.cursor.x, m.cursor.y), s = mon.scale, bs = sizeOf(bar), hs = sizeOf(hint);
+      bar.style.display = "flex"; place(bar, mon.x + (mon.w - bs.w * s) / 2, mon.y + 16 * s, s);
+      hint.style.display = ""; place(hint, mon.x + (mon.w - hs.w * s) / 2, mon.y + 16 * s + bs.h * s + 10 * s, s);
+      redraw();
+      requestAnimationFrame(() => requestAnimationFrame(() => post({ t: "drawn" })));   // painted: the app may show it now
+    } catch (err) {
+      reset();
+      post({ t: "error", msg: "couldn't show the screenshot: " + ((err && err.message) || err) });
+    }
+  });
+  post({ t: "ready" });
+})();
+</script>
+</body>
+</html>

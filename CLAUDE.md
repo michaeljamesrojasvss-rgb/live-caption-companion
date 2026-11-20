@@ -53,10 +53,26 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   file, plus worker code only for a genuinely new newChat/answer kind. `devOnly` sites (Google AI Mode, for
   testing without Copilot) load only in **dev mode** = `AppIsDev()` in `app-paths.ahk` (git working copy,
   not installed; `[Dev] On=0` in live-captions.ini turns it off); picked in the pool window's "Chat site" list.
+- `app\screen-ask.ahk` (+ `screen-ask.html`, prefix `Sa*`) - Screen ask: a shortcut (Ctrl+Shift+Alt+A) freezes
+  every monitor, you mark something (free hand / box / oval), type a question (optional), and it goes to the
+  Copilot pool as images (all screens with the marks + close-ups of the marked areas) + a prompt, shown in the
+  pool's "screen-ask" Copilot window, a page **reserved** for it in the pool (`reserve`, always loaded and warm;
+  Screen ask keeps the pool running - availability is the owner's must). Its OWN app and process, generic. **OFF by default**: Companion tray >
+  Screen ask > On ([ScreenAsk] in live-captions.ini), side `app\screen-ask-link.ahk` (`SaLink*`). Failure =
+  marked screenshot on the clipboard + a note. Pool side: `images` in an ask (files in `APP_IMAGE_INBOX`
+  only), attached by the worker per the site's `images` block. Design: `docs\SCREEN-ASK.md`.
+- `app\webview-guard.ahk` (`Wvg*`) - **memory guard** for every built-in browser (WebView2), used by the Companion,
+  the pool and Screen ask. Rule: a WebView2 app must never outlive its users or grow without limit. The pool
+  closes itself when no app/window uses it (`NoAppQuitSec`) and the Companion quits it on exit; the pool audits
+  its engine every `MemAuditSec` (idle hidden pages -> WebView2 low-memory level, a page over `PageMaxMB` or the
+  engine over `TotalMaxMB` -> reloads/closes idle pages); Screen ask's hidden overlay goes low-memory and is
+  rebuilt over `MaxMB`. Leftover engines of OUR folders (parent not AutoHotkey) are ended at each start and every
+  5 min by the Companion; tray > Copilot assist > "Built-in browser memory" shows who uses what. Any new
+  WebView2 app must do the same (include it, sweep at start, audit, end with its users).
 - `app\debug-trace.ahk` (`Dbg*`) - one shared timing trace, `data\debug-trace.log`, written by the Companion,
   the pool and each pool page (ms timestamps; every button click, helper prompts, pool queue/dispatch,
   page steps with a snapshot of what the page shows). Never prompt/answer/caption text. Off by default (data\debug.ini [Trace] On=1 turns it on); tray toggle.
-- `app\icons\*.ico` - each app's own icon (companion, tasks, pool, updater), drawn by
+- `app\icons\*.ico` - each app's own icon (companion, tasks, pool, screen-ask, updater), drawn by
   `tools\dev\make-icons.ps1`. Every app script starts with `TraySetIcon(...)` and its own
   `SetCurrentProcessExplicitAppUserModelID` (own taskbar button; they all run on the same AutoHotkey32.exe).
   A new app gets a new icon + app ID the same way. Every icon carries the owner's signature: a cyan

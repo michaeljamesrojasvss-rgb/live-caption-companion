@@ -12,7 +12,10 @@
   "warmUp": true,
   "newChat": "link",
   "answer": "copy-button",
+  "images": { "how": ["paste", "drop", "input", "trusted-input"], "max": 4, "attachWaitMs": 6000, "uploadWaitMs": 60000 },
   "selectors": {
+    "fileInput": ["input[type=\"file\"]"],
+    "attachBusy": [".fai-BebopLiteChatInput [role=\"progressbar\"]", ".fai-BebopLiteChatInput [aria-busy=\"true\"]"],
     "editor": ["[data-lexical-editor=\"true\"][contenteditable=\"true\"]", "span[role=\"textbox\"][contenteditable=\"true\"]"],
     "question": ["[data-testid=\"chatQuestion\"]"],
     "message": ["[data-testid=\"copilot-message-div\"]"],

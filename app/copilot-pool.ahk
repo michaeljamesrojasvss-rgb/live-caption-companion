@@ -6,6 +6,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include app-paths.ahk
 #Include Json.ahk
 #Include debug-trace.ahk
+#Include webview-guard.ahk
 #Include *i %A_ScriptDir%\lib\WebView2\WebView2.ahk
 ; ==============================================================================
 ; copilot-pool.ahk  -  Copilot pool: hidden Copilot pages that answer requests
@@ -53,7 +54,16 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 ;                (quiet: with show - the window opens without taking the focus)
 ;                (orNew: a follow-up that may start the conversation again if it's gone - it carries the full prompt)
 ;                (respectDraft: an automatic prompt - if text was typed by hand into the page's box, it comes back unsent)
+;                (images: [file paths] - PNG/JPEG files in APP_IMAGE_INBOX only (app-paths.ahk), attached to the
+;                 message before the prompt; all or nothing - if one can't be attached it comes back unsent.
+;                 Read when the request arrives: the app may delete the files once it has "done".
+;                 Sites without "images" in their chat-sites file refuse them (unsent).)
 ;                {t:"cancel", id}   {t:"end", conversation}   {t:"status", hwnd}
+;                {t:"reserve", conversation, hwnd}: that conversation gets its OWN page, always loaded and
+;                  warm, never lent out (Screen ask). Closing its window / "end" = only a fresh chat. Not kept
+;                  across pool restarts: the app sends it again now and then (it also subscribes to "state").
+; Never stuck: pages that fail to open are retried (2, 4, 8... up to 30 s apart); 3 failures in a row or a
+; failed engine start = a new browser engine (PoolMakeEngine, retried every 15 s).
 ;                {t:"show"}   {t:"signin"}   {t:"quit"}
 ;   pool -> app  {t:"queued", id, position}   {t:"sent", id}   {t:"chunk", id, text}
 ;                {t:"done", id, ok, kind, text, markdown, error, ms}
@@ -100,6 +110,13 @@ POOL_DEFAULTS := Map(
     "WarmUpPrompt", "Connection check - please reply with just: OK",
     "PersonalDomains", "gmail.com, googlemail.com, outlook.com, hotmail.com, live.com, msn.com, passport.com, yahoo.com, ymail.com, rocketmail.com, icloud.com, me.com, mac.com, aol.com, proton.me, protonmail.com, gmx.com, gmx.net, mail.com, yandex.com, zoho.com",
     "AllowPersonal", 0,
+    "ImageMaxMB", 20,              ; biggest image file a request may attach
+    ; Memory guard (PoolMemAudit): the pool's whole browser engine is measured every MemAuditSec.
+    "MemAuditSec", 30,
+    "IdleLowMemSec", 60,           ; a hidden page idle this long is told to use little memory (WebView2 "low" level)
+    "PageMaxMB", 400,              ; a page's own script memory over this (idle, not your window) = it's reloaded fresh
+    "TotalMaxMB", 1500,            ; the whole engine over this = biggest idle page reloaded, idle spare pages closed
+    "NoAppQuitSec", 60,            ; no app (Companion, Screen ask...) and no open window for this long = the pool closes
     "ChatW", 900,                  ; size of a 💬 Copilot window (remembered when you close one)
     "ChatH", 760,
     "WorkConfirmed", "")           ; "unknown" = the user confirmed an account we couldn't read is the work one
@@ -163,6 +180,13 @@ signinView := 0           ; the visible sign-in window, while open
 reqs := Map()             ; request id -> request
 queue := []               ; ids waiting for a view
 convs := Map()            ; conversation name -> view
+reserved := Map()         ; conversation name -> true: an app's OWN page, always kept loaded and ready ("reserve")
+addFails := 0             ; pages that failed to open in a row (retried with a growing pause; 3 = new browser engine)
+lastAddTry := 0
+envFailedAt := 0
+envRetry := false         ; the engine failed but trying again may help
+poolMemMB := 0            ; the browser engine's memory at the last audit (all its processes)
+poolStartedAt := A_TickCount
 subs := Map()             ; app window -> true (gets "state" messages)
 account := {email: "", tenant: "", how: "", known: false}
 poolState := "starting"
@@ -185,30 +209,36 @@ OnExit(PoolOnExit)
 if (InStr(poolArgs, "/show") || InStr(poolArgs, "/signin") || !InStr(poolArgs, "/background"))
     PoolShow()
 PoolLog("started (" (A_PtrSize * 8) "-bit, version " APP_VERSION (POOL_DEV ? ", DEV MODE" : "") "), site: " PoolSiteName())
-SetTimer(PoolStart, -50)
+; after a restart the old copy's browser engine may still be closing on the same sign-in folder (a page
+; opened on it at that moment gets "Operation aborted"): give it a moment
+SetTimer(PoolStart, InStr(poolArgs, "/restart") ? -2000 : -50)
 SetTimer(PoolHousekeep, 1000)
+SetTimer(PoolMemAudit, Max(10, PoolNum("MemAuditSec")) * 1000)
+SetTimer(PoolOwnerCheck, 5000)
 
 PoolStart() {
-    global env, envError, workerJs
-    try {
-        if !IsSet(WebView2)
-            throw Error("the WebView2 library is missing (app\lib\WebView2)")
-        if !IsObject(site)
-            throw Error("no chat site files found (app\chat-sites)")
-        workerJs := FileRead(POOL_WORKER, "UTF-8")
-        sso := PoolNum("SingleSignOn")
-        dir := PoolProfileDir()
-        DirCreate(dir)
-        env := WebView2.CreateEnvironmentAsync({ AllowSingleSignOnUsingOSPrimaryAccount: sso ? 1 : 0 }, dir).await(60000)
-        ver := ""
-        try ver := env.BrowserVersionString
-        PoolLog("browser engine " ver ", single sign-on " (sso ? "on" : "off"))
-        Loop Max(1, PoolNum("Views"))
-            PoolAddView()
-    } catch as err {
-        envError := err.Message
-        PoolLog("ENGINE FAILED: " err.Message)
+    global workerJs
+    if !IsSet(WebView2) {
+        PoolEngineFailed("the WebView2 library is missing (app\lib\WebView2)", false)
+        return
     }
+    if !IsObject(site) {
+        PoolEngineFailed("no chat site files found (app\chat-sites)", false)
+        return
+    }
+    try {
+        workerJs := FileRead(POOL_WORKER, "UTF-8")
+    } catch as err {
+        PoolEngineFailed("couldn't read " POOL_WORKER ": " err.Message, false)
+        return
+    }
+    ; a browser engine left behind by an earlier pool (or Screen ask) that's gone: end it first - it
+    ; holds memory, and one still closing on our sign-in folder makes new pages fail ("Operation aborted")
+    freed := 0
+    if (n := WvgSweepOrphans(&freed))
+        PoolLog("ended " n " leftover built-in browser(s) of closed apps (" freed " MB)")
+    if PoolMakeEngine()
+        PoolTopUp()
     PoolUpdateState()
     if InStr(poolArgs, "/signout")
         SetTimer(PoolSignOut.Bind(false), -500)
@@ -216,14 +246,54 @@ PoolStart() {
         PoolOpenSignIn()
 }
 
+; Starts the browser engine (on the current sign-in folder). False = failed (retried by PoolHousekeep).
+PoolMakeEngine() {
+    global env, envError, addFails
+    try {
+        sso := PoolNum("SingleSignOn")
+        dir := PoolProfileDir()
+        DirCreate(dir)
+        env := WebView2.CreateEnvironmentAsync({ AllowSingleSignOnUsingOSPrimaryAccount: sso ? 1 : 0 }, dir).await(60000)
+        envError := "", addFails := 0
+        ver := ""
+        try ver := env.BrowserVersionString
+        PoolLog("browser engine " ver ", single sign-on " (sso ? "on" : "off"))
+        return true
+    } catch as err {
+        PoolEngineFailed(err.Message, true)
+        return false
+    }
+}
+
+; retry: try again by itself in a moment (always, unless something is missing that a retry can't fix)
+PoolEngineFailed(why, retry) {
+    global env, envError, envFailedAt, envRetry
+    env := 0
+    envError := why
+    envFailedAt := A_TickCount
+    envRetry := retry
+    PoolLog("ENGINE FAILED: " why (retry ? " - trying again in 15 s" : ""))
+    PoolUpdateState()
+}
+
+; The pages should be: the "Views" setting + one page per reserved conversation (up to MaxViews)
+PoolWantViews() => Min(Max(PoolNum("Views"), PoolNum("MaxViews")), Max(1, PoolNum("Views")) + reserved.Count)
+
+; A page that failed to open is tried again after 2, 4, 8, 16, then every 30 s
+PoolAddPause() => addFails ? Min(30000, 2000 * (2 ** (addFails - 1))) : 0
+
 ; ==============================================================================
 ; Views
 ; ==============================================================================
 PoolAddView() {
-    global viewSeq
+    global viewSeq, addFails, lastAddTry
+    lastAddTry := A_TickCount
     viewSeq += 1
     v := { id: viewSeq, gui: 0, ctrl: 0, wv: 0, state: "loading", host: "", onLogin: false, dead: false,
-        jobId: "", reqId: "", conv: "", lastUse: A_TickCount, createdAt: A_TickCount, failedAt: 0, held: false, needWarm: false }
+        jobId: "", reqId: "", conv: "", lastUse: A_TickCount, createdAt: A_TickCount, failedAt: 0, held: false, needWarm: false,
+        reserved: false }
+    if (env = 0)
+        return 0
     try {
         v.gui := Gui("+ToolWindow +Owner" pg.Hwnd, PoolSiteName() " view " v.id)
         v.gui.OnEvent("Close", PoolChatClosed.Bind(v))     ; only while it's shown as your Copilot window
@@ -231,11 +301,24 @@ PoolAddView() {
         PoolPlaceView(v)
         PoolInitView(v)
         views.Push(v)
+        addFails := 0
         PoolLog("view " v.id " opened")
     } catch as err {
-        PoolLog("view " v.id " FAILED to open: " err.Message)
+        ; (it was never shown: nothing to tidy but the window) - tried again after a pause (PoolHousekeep);
+        ; 3 in a row = the browser engine itself is broken (e.g. it was closing): a new one is started
+        addFails += 1
+        PoolLog("view " v.id " FAILED to open: " err.Message " (" addFails " in a row - trying again in "
+            Round(PoolAddPause() / 1000) " s)")
+        try v.ctrl.Close()
         try v.gui.Destroy()
+        if (addFails >= 3 && Mod(addFails, 3) = 0) {
+            PoolLog("pages keep failing to open - starting a new browser engine")
+            PoolMakeEngine()
+        }
+        PoolUpdateState()
+        return 0
     }
+    PoolEnsureReserved()
     PoolUpdateState()
     return v
 }
@@ -313,10 +396,55 @@ PoolReplaceView(v, why) {
 PoolTopUp() {
     if (env = 0 || envError != "")
         return
-    want := Max(1, PoolNum("Views"))
-    while (PoolRegularCount() < want)
-        PoolAddView()
+    Loop Max(0, PoolWantViews() - PoolRegularCount()) {   ; (stops at the first failure: retried after a pause)
+        if !PoolAddView()
+            break
+    }
+    PoolEnsureReserved()
     PoolDispatch()
+}
+
+; ==============================================================================
+; Reserved conversations: an app's OWN page (e.g. Screen ask), always loaded and ready, never lent out.
+; The app says {t:"reserve", conversation} (again now and then: a restarted pool forgets). Closing its
+; window or "end" only starts a fresh chat on it; if its page dies, a new one takes its place.
+; ==============================================================================
+PoolReserve(conv) {
+    if (conv = "")
+        return
+    if !reserved.Has(conv) {
+        if (reserved.Count >= 4)                 ; a few apps at most: never let a bad caller eat every page
+            return
+        reserved[conv] := true
+        PoolLog("conversation " conv " reserved (its own page, kept ready)")
+    }
+    PoolEnsureReserved()
+}
+
+; Gives every reserved conversation a page: a free one, else a new one (PoolTopUp / PoolHousekeep retry)
+PoolEnsureReserved() {
+    for conv in reserved {
+        if (convs.Has(conv) && !convs[conv].dead) {
+            convs[conv].reserved := true
+            continue
+        }
+        if convs.Has(conv)
+            convs.Delete(conv)
+        v := PoolFreeView()
+        if !IsObject(v) {                        ; a page still loading, not taken by anything
+            for x in views
+                if (!x.dead && !x.held && x.conv = "" && x.jobId = "" && x.state != "load-failed") {
+                    v := x
+                    break
+                }
+        }
+        if !IsObject(v)
+            continue                             ; PoolTopUp adds a page for it (PoolWantViews counts it)
+        v.conv := conv, v.reserved := true
+        convs[conv] := v
+        PoolLog("view " v.id " is " conv "'s own page")
+        DbgTrace("pool", PoolViewName(v) " reserved for " conv "   | pages: " PoolViewsSummary())
+    }
 }
 
 ; Links that would open a new window: hidden pages never open anything; in your 💬 window a web link
@@ -346,6 +474,7 @@ PoolNavStarting(sender, args) {
 ; A window with a "conversation" name (e.g. one per helper) remembers its own place and size
 ; ([Window <name>] in copilot-pool.ini); others use the last place any window had ([ChatWindow]).
 PoolShowChat(v, label, quiet := false) {     ; quiet: an app opened it by itself - never take the focus
+    PoolMemLevel(v, 0)
     v.gui.Title := PoolSiteName() (label != "" ? " - " label : "") " (Caption Companion)"
     if v.held {                                  ; already open (the same helper again): bring it up, leave it where it is
         if quiet
@@ -417,7 +546,9 @@ PoolChatClosed(v, *) {
     v.held := false
     v.lastUse := A_TickCount
     v.gui.Opt("+ToolWindow +Owner" pg.Hwnd)
-    if (v.conv != "") {                         ; that window's conversation (its helper) ends with it
+    if (v.conv != "" && v.reserved) {           ; an app's own page: it stays that app's, with a fresh chat
+        PoolLog("view " v.id " window closed - stays " v.conv "'s own page")
+    } else if (v.conv != "") {                  ; that window's conversation (its helper) ends with it
         PoolLog("view " v.id " window closed - conversation " v.conv " ended")
         convs.Delete(v.conv)
         v.conv := ""
@@ -526,7 +657,7 @@ PoolOnViewMessage(v, raw) {
             if !isSignin
                 v.needWarm := PoolWarmUpOn()                       ; a freshly loaded page: warm it up once ready
             if (!isSignin && v.jobId = "" && v.conv != "") {      ; the page reloaded: its chat is gone
-                if v.held {                               ; still your open window (e.g. a helper's): it stays
+                if (v.held || v.reserved) {               ; still your open window (e.g. a helper's) / an app's own page: it stays
                     v.convFresh := true                   ; that helper's, but the next prompt must be a full one
                     PoolLog("view " v.id ": " v.conv " window reloaded - its chat starts over")
                 } else {
@@ -570,6 +701,15 @@ PoolOnViewMessage(v, raw) {
                 "   [" m.Get("snap", "") "]")
         case "trusted":
             PoolDoTrusted(v, m)
+        case "mem":                                       ; the page's own size (memory audit)
+            v.heapMB := m.Get("heapMB", 0), v.nodes := m.Get("nodes", 0)
+        case "images-get":                                ; the page is about to attach its job's images
+            if (m.Get("jobId", "") != v.jobId || !reqs.Has(v.reqId))
+                return
+            list := [], rq := reqs[v.reqId]
+            for im in (rq.HasOwnProp("images") ? rq.images : [])
+                list.Push(Map("name", im.name, "mime", im.mime, "b64", im.b64))
+            try v.wv.PostWebMessageAsString(Json.Stringify(Map("t", "images", "jobId", v.jobId, "list", list)))
         case "sent":
             if (m.Get("jobId", "") != v.jobId)                ; from a job that was replaced meanwhile
                 return
@@ -738,6 +878,19 @@ PoolDoTrusted(v, m) {
                     , '{"type":"keyUp","key":"Backspace","code":"Backspace","windowsVirtualKeyCode":8,"nativeVirtualKeyCode":8}']
                 v.wv.CallDevToolsProtocolMethodAsync("Input.dispatchKeyEvent", p).await(4000)
             ok := 1
+        } else if (op = "files") {                      ; puts image n of the job into the file input the page marked
+            idx := IsInteger(m.Get("text", "")) ? Integer(m.Get("text")) + 1 : 0
+            r := reqs.Has(v.reqId) ? reqs[v.reqId] : 0
+            if (IsObject(r) && r.HasOwnProp("images") && idx >= 1 && idx <= r.images.Length && FileExist(r.images[idx].path)) {
+                doc := Json.Parse(v.wv.CallDevToolsProtocolMethodAsync("DOM.getDocument", '{"depth":0}').await(4000))
+                found := Json.Parse(v.wv.CallDevToolsProtocolMethodAsync("DOM.querySelector",
+                    Json.Stringify(Map("nodeId", doc["root"]["nodeId"], "selector", "input[data-lcc-files]"))).await(4000))
+                if found.Get("nodeId", 0) {
+                    v.wv.CallDevToolsProtocolMethodAsync("DOM.setFileInputFiles",
+                        Json.Stringify(Map("files", [r.images[idx].path], "nodeId", found["nodeId"]))).await(8000)
+                    ok := 1
+                }
+            }
         }
     } catch as err {
         PoolLog("view " v.id ": trusted " op " failed: " err.Message)
@@ -820,16 +973,84 @@ PoolNewRequest(m, hwnd) {
         respectDraft: m.Get("respectDraft", 0) ? true : false,   ; an automatic prompt: never replaces text you typed in the box
         quiet: m.Get("quiet", 0) ? true : false,   ; show: the window opens without taking the focus (an app opened it by itself)
         queuedAt: A_TickCount, startedAt: 0, sent: false, status: "waiting", view: 0, logName: "#" jobSeq, warm: false,
-        tick: IsInteger(m.Get("tick", 0)) ? m.Get("tick", 0) : 0, waitWhy: "", sentAt: 0 }
+        tick: IsInteger(m.Get("tick", 0)) ? m.Get("tick", 0) : 0, waitWhy: "", sentAt: 0,
+        imgPaths: (m.Get("images", "") is Array) ? m.Get("images") : [], images: [], imgBytes: 0 }
     if (r.conv = "")
         r.newChat := true
     return r
+}
+
+; Reads a request's images (from APP_IMAGE_INBOX only - no other file can be sent this way) into memory.
+; Only sizes ever go to the log.
+PoolLoadImages(r, &why) {
+    spec := PoolSiteGet("images", "")
+    if !(spec is Map) {
+        why := PoolSiteName() " can't take images"
+        return false
+    }
+    maxN := spec.Get("max", 4)
+    if (r.imgPaths.Length > maxN) {
+        why := "too many images (" r.imgPaths.Length " - " PoolSiteName() " takes " maxN ")"
+        return false
+    }
+    inbox := StrLower(RTrim(PoolFullPath(APP_IMAGE_INBOX), "\")) "\"
+    for p in r.imgPaths {
+        full := (p is String) ? PoolFullPath(p) : ""
+        if (full = "" || SubStr(StrLower(full), 1, StrLen(inbox)) != inbox || InStr(SubStr(full, StrLen(inbox) + 1), "\")) {
+            why := "an image that isn't in the pool's image folder was refused"
+            return false
+        }
+        SplitPath(full, &name, , &ext)
+        if !RegExMatch(ext, "i)^(png|jpe?g)$") {
+            why := "only PNG and JPEG images can be sent"
+            return false
+        }
+        if !FileExist(full) {
+            why := "an image file is missing"
+            return false
+        }
+        size := FileGetSize(full)
+        if (size = 0 || size > PoolNum("ImageMaxMB") * 1048576) {
+            why := "an image is empty or bigger than " PoolNum("ImageMaxMB") " MB"
+            return false
+        }
+        r.images.Push({path: full, name: name, mime: (StrLower(ext) = "png" ? "image/png" : "image/jpeg"),
+            b64: PoolB64(FileRead(full, "RAW"))})
+        r.imgBytes += size
+    }
+    return true
+}
+
+PoolFullPath(p) {
+    n := DllCall("GetFullPathNameW", "WStr", p, "UInt", 0, "Ptr", 0, "Ptr", 0, "UInt")
+    if !n
+        return ""
+    buf := Buffer(n * 2 + 2, 0)
+    DllCall("GetFullPathNameW", "WStr", p, "UInt", n + 1, "Ptr", buf, "Ptr", 0, "UInt")
+    return StrGet(buf, "UTF-16")
+}
+
+PoolB64(buf) {
+    n := 0
+    DllCall("crypt32\CryptBinaryToStringW", "Ptr", buf, "UInt", buf.Size, "UInt", 0x40000001, "Ptr", 0, "UInt*", &n)   ; BASE64 | NOCRLF
+    out := Buffer(n * 2, 0)
+    DllCall("crypt32\CryptBinaryToStringW", "Ptr", buf, "UInt", buf.Size, "UInt", 0x40000001, "Ptr", out, "UInt*", &n)
+    return StrGet(out, n, "UTF-16")
 }
 
 PoolAsk(r) {
     if (Trim(r.prompt, " `t`r`n") = "") {
         PoolFinish(r, false, "unsent", "the prompt is empty", , , , false)
         return
+    }
+    if r.imgPaths.Length {
+        why := ""
+        if !PoolLoadImages(r, &why) {
+            PoolLog("request " r.logName " refused: " why)
+            PoolFinish(r, false, "unsent", why, , , , false)
+            return
+        }
+        PoolLog("request " r.logName ": " r.images.Length " image(s), " Round(r.imgBytes / 1024) " KB")
     }
     reqs[r.id] := r
     if (poolState = "off" || (!r.show && (poolState = "signin" || poolState = "account"))) {
@@ -903,6 +1124,7 @@ PoolViewName(v) {
     if v.HasOwnProp("signin")                    ; the sign-in / sign-out window (no pool fields)
         return "sign-in window"
     return "page " v.id (v.held ? " (💬 window" (v.conv != "" ? " " v.conv : "") ")" : "")
+        . (v.reserved ? " [" v.conv "'s own]" : "")
 }
 
 ; One line describing every page: "1 ready, 2 busy j12(#11) 💬window ..."
@@ -937,7 +1159,12 @@ PoolPickView(r, &lost) {
                         return 0
                     }
                 }
-                return (v.state = "ready" && v.jobId = "") ? v : 0
+                if (v.state = "ready" && v.jobId = "")
+                    return v
+                ; only warming up (e.g. an app's own page): the real prompt replaces the warm-up (PoolRun)
+                if (v.jobId != "" && reqs.Has(v.reqId) && reqs[v.reqId].warm)
+                    return v
+                return 0
             }
             convs.Delete(r.conv)
         }
@@ -1022,7 +1249,9 @@ PoolRun(r, v) {
         "timeoutMs", PoolNum("AnswerTimeoutSec") * 1000,
         "scroll", (v.held && !r.warm) ? 1 : 0,          ; your 💬 window follows the newest answer
         "respectDraft", (r.HasOwnProp("respectDraft") && r.respectDraft) ? 1 : 0,
+        "images", r.HasOwnProp("images") ? r.images.Length : 0,   ; the page asks for them ("images-get")
         "preempt", preempt ? 1 : 0)
+    PoolMemLevel(v, 0)                           ; working: full speed
     try {
         v.wv.PostWebMessageAsString(Json.Stringify(job))
         PoolLog("request " r.logName " -> view " v.id (r.show ? " (shown as a window)" : "") (preempt ? " (replacing)" : ""))
@@ -1075,6 +1304,11 @@ PoolEndConversation(conv) {
     if !convs.Has(conv)
         return
     v := convs[conv]
+    if v.reserved {                              ; an app's own page: only a fresh chat, it stays theirs
+        if (v.jobId = "" && !v.held)
+            try v.wv.PostWebMessageAsString('{"t":"newchat"}')
+        return
+    }
     convs.Delete(conv)
     v.conv := ""
     if (v.jobId = "")
@@ -1108,9 +1342,9 @@ PoolHousekeep() {
     for v in views {
         if v.dead || v.jobId != "" || v.held      ; your open Copilot windows are never touched
             continue
-        if (v.conv != "" && now - v.lastUse > PoolNum("ConversationIdleMin") * 60000)
+        if (v.conv != "" && !v.reserved && now - v.lastUse > PoolNum("ConversationIdleMin") * 60000)
             PoolEndConversation(v.conv)
-        else if (v.conv = "" && v.state = "ready" && now - v.lastUse > PoolNum("RefreshIdleMin") * 60000) {
+        else if ((v.conv = "" || v.reserved) && v.state = "ready" && now - v.lastUse > PoolNum("RefreshIdleMin") * 60000) {
             v.lastUse := now
             DbgTrace("pool", PoolViewName(v) ": idle " PoolNum("RefreshIdleMin") " min - reloading it (it will warm up again)")
             try {
@@ -1122,19 +1356,32 @@ PoolHousekeep() {
         }
     }
     ; extra views opened for conversations close again when idle
-    want := Max(1, PoolNum("Views"))
+    want := PoolWantViews()
     if (PoolRegularCount() > want)
         for v in views.Clone()
             if (PoolRegularCount() > want && !v.held && v.jobId = "" && v.conv = "" && now - v.lastUse > 300000) {
                 PoolLog("view " v.id " closed (not needed)")
                 PoolCloseView(v)
             }
+    ; never stuck without pages: a broken browser engine is started again, missing pages (the "Views"
+    ; setting + reserved ones) are opened again, after a pause that grows while they keep failing
+    if (env = 0 && envError != "" && envRetry && now - envFailedAt > 15000) {
+        PoolLog("starting the browser engine again")
+        if PoolMakeEngine()
+            PoolTopUp()
+        PoolUpdateState()
+    } else if (env != 0 && PoolRegularCount() < PoolWantViews() && now - lastAddTry > Max(1500, PoolAddPause())) {
+        PoolTopUp()
+    } else if reserved.Count {
+        PoolEnsureReserved()
+    }
     if (queue.Length && poolState = "ready")
         PoolDispatch()
     ; freshly loaded pages send one short warm-up message (one page per second), so real prompts go at once
+    ; (an app's own reserved page too, while it isn't open as a window)
     if (poolState = "ready" && PoolWarmUpOn())
         for v in views
-            if (!v.dead && v.needWarm && !v.held && v.state = "ready" && v.jobId = "" && v.conv = "") {
+            if (!v.dead && v.needWarm && !v.held && v.state = "ready" && v.jobId = "" && (v.conv = "" || v.reserved)) {
                 PoolWarm(v)
                 break
             }
@@ -1162,7 +1409,9 @@ PoolUpdateState(*) {
     if IsObject(signinView) && signinView.onLogin
         login := true
     why := ""
-    if (envError != "")
+    if (envError != "" && envRetry)
+        s := "starting", r := "the browser engine failed (" envError ") - trying again"
+    else if (envError != "")
         s := "off", r := "Copilot pool couldn't start: " envError
     else if (env = 0)
         s := "starting", r := "starting the browser engine"
@@ -1253,6 +1502,8 @@ PoolHandle(text) {
             PoolCancel(m.Get("id", ""))
         case "end":
             PoolEndConversation(m.Get("conversation", ""))
+        case "reserve":                              ; {conversation}: keep a page of its own, always ready
+            PoolReserve(Trim(m.Get("conversation", "")))
         case "status":
             PoolPublish(Json.Parse(lastPublished != "" ? lastPublished : '{"t":"state","state":"starting"}'))
         case "show":
@@ -1377,7 +1628,7 @@ PoolPaintState() {
             if v.held
                 held += 1
         }
-        pg["ViewInfo"].Text := "ready: " ready ", open as your windows: " held
+        pg["ViewInfo"].Text := "ready: " ready ", open as your windows: " held (poolMemMB ? ", memory: " poolMemMB " MB" : "")
     }
 }
 
@@ -1573,6 +1824,107 @@ PoolCopyLog(*) {
         out .= lines[start + A_Index - 1] "`r`n"
     A_Clipboard := out
     pg["TestAnswer"].Value := "The log is on the clipboard."
+}
+
+; ==============================================================================
+; Memory guard: the pool never grows without limit, and never outlives the apps that use it
+; ==============================================================================
+; WebView2's memory level for one page: 0 normal, 1 low (a hidden idle page: it may drop caches;
+; its script keeps running, so it still takes prompts - set back to normal the moment it gets one)
+PoolMemLevel(v, level) {
+    if (v.dead || (v.HasOwnProp("memLevel") && v.memLevel = level))
+        return
+    try {
+        v.wv.MemoryUsageTargetLevel := level
+        v.memLevel := level
+    }
+}
+
+; Every MemAuditSec: measure, calm idle pages down, reload a page that grew too big, and if the whole
+; engine is over TotalMaxMB: reload the biggest idle page and close idle spare pages. Numbers only in logs.
+PoolMemAudit() {
+    global poolMemMB
+    static lastLogged := 0
+    if (env = 0)
+        return
+    now := A_TickCount
+    try {
+        total := WvgEnvMB(env)
+        poolMemMB := total
+        for v in views {
+            if v.dead
+                continue
+            idle := !v.held && v.jobId = "" && now - v.lastUse > PoolNum("IdleLowMemSec") * 1000
+            PoolMemLevel(v, idle ? 1 : 0)
+            try v.wv.PostWebMessageAsString('{"t":"mem"}')       ; the page answers with its size (next audit uses it)
+        }
+        ; one page grown too big (a long chat, a leaking site): a fresh copy of it, if nobody is using it
+        for v in views {
+            if (v.dead || v.held || v.jobId != "" || !v.HasOwnProp("heapMB") || v.heapMB <= PoolNum("PageMaxMB"))
+                continue
+            PoolMemReload(v, "its page uses " v.heapMB " MB (limit " PoolNum("PageMaxMB") ")")
+        }
+        over := total > PoolNum("TotalMaxMB")
+        if over {
+            big := 0
+            for v in views
+                if (!v.dead && !v.held && v.jobId = "" && v.HasOwnProp("heapMB")
+                    && (!IsObject(big) || v.heapMB > big.heapMB))
+                    big := v
+            if IsObject(big)
+                PoolMemReload(big, "the pool uses " total " MB (limit " PoolNum("TotalMaxMB") ")")
+            want := PoolWantViews()
+            for v in views.Clone()                  ; spare pages above the setting go now (not after 5 min)
+                if (PoolRegularCount() > want && !v.dead && !v.held && v.jobId = "" && v.conv = "") {
+                    PoolLog("view " v.id " closed (memory)")
+                    PoolCloseView(v)
+                }
+        }
+        DbgTrace("pool", "memory " total " MB in " WvgEnvPids(env).Length " processes, " PoolRegularCount() " page(s)"
+            (over ? " - OVER " PoolNum("TotalMaxMB") " MB" : ""))
+        if (over || Abs(total - lastLogged) >= 150) {
+            lastLogged := total
+            PoolLog("memory: " total " MB (" PoolRegularCount() " pages)" (over ? " - over the limit, trimmed" : ""))
+        }
+        PoolPaintState()
+    } catch as err {
+        PoolLog("memory audit failed: " err.Message)
+    }
+}
+
+PoolMemReload(v, why) {
+    PoolLog("view " v.id " reloaded to free memory: " why)
+    DbgTrace("pool", PoolViewName(v) " reloaded to free memory: " why)
+    v.heapMB := 0
+    v.lastUse := A_TickCount
+    try v.wv.Navigate(PoolAddress())             ; a reserved page stays reserved (it only reloads)
+}
+
+; The pool closes itself when nothing uses it: no app window that talks to it (Companion, Screen ask - they
+; subscribe) and none of its Copilot windows open, for NoAppQuitSec. Its window open on screen keeps it too.
+PoolOwnerCheck() {
+    static noneSince := 0
+    if (noneSince = 0)
+        noneSince := poolStartedAt               ; a grace period at the start for the apps to say hello
+    used := false
+    try used := DllCall("IsWindowVisible", "Ptr", pg.Hwnd)
+    for v in views
+        if (!v.dead && v.held)
+            used := true                         ; one of its Copilot windows is open: you're using it
+    for hwnd in subs.Clone() {
+        if WinExist("ahk_id " hwnd)
+            used := true
+        else
+            subs.Delete(hwnd)
+    }
+    if used {
+        noneSince := A_TickCount
+        return
+    }
+    if (A_TickCount - noneSince > Max(15, PoolNum("NoAppQuitSec")) * 1000) {
+        PoolLog("no app is using the pool any more - closing it (frees " poolMemMB " MB)")
+        ExitApp()
+    }
 }
 
 PoolOnExit(*) {

@@ -35,7 +35,8 @@
   const RESUME_KEY = "__lccPoolResume";
 
   // ---------- selectors: from the site file ----------
-  const SEL_KEYS = ["editor", "question", "message", "messageBusy", "copyButton", "reply", "inputBox", "attachments", "newChat", "answerArea", "stop"];
+  const SEL_KEYS = ["editor", "question", "message", "messageBusy", "copyButton", "reply", "inputBox", "attachments", "newChat", "answerArea", "stop",
+    "fileInput", "attachmentItem", "attachBusy", "dropTarget"];
   const SEL = {};
   for (const k of SEL_KEYS) {
     const v = (site.selectors || {})[k];
@@ -79,10 +80,10 @@
   // ---------- trusted input from AHK (DevTools protocol, no focus needed) ----------
   let reqSeq = 0;
   const pending = new Map();
-  function trusted(op, text) {
+  function trusted(op, text, timeoutMs = 4000) {
     return new Promise(resolve => {
       const reqId = ++reqSeq;
-      const tm = setTimeout(() => { pending.delete(reqId); resolve(false); }, 4000);
+      const tm = setTimeout(() => { pending.delete(reqId); resolve(false); }, timeoutMs);
       pending.set(reqId, ok => { clearTimeout(tm); resolve(ok); });
       send({ t: "trusted", reqId, op, text });
     });
@@ -102,7 +103,10 @@
   const editorText = () => { const e = getEditor(); return e ? norm(isField(e) ? e.value : e.innerText) : ""; };
   const questionCount = () => qa("question").length;
   let pageUsed = false;            // "navigate" sites: a prompt was sent on this page load (so it's not a fresh chat)
-  const isClean = () => !!getEditor() && editorText() === "" && (NAVIGATE_NEW_CHAT ? !pageUsed : questionCount() === 0);
+  // clean = empty box, no chat yet, and no file chips left in the box (e.g. images of a job that failed before Send)
+  const isClean = () => !!getEditor() && editorText() === "" && (NAVIGATE_NEW_CHAT ? !pageUsed : questionCount() === 0)
+    && !attachPending                         // images put in the box but never sent: only a reload is sure to clear them
+    && (!imagesUsed || chipCount() === 0);   // (only checked on a page we attached images on: text-only use is unchanged)
   const btnLabel = b => (b.getAttribute("aria-label") || "") + " " + (b.getAttribute("data-testid") || "") + " " + (b.title || "");
 
   function inputButtons() {
@@ -129,6 +133,7 @@
         + " send=" + (b ? (btnDisabled(b) ? "disabled" : "enabled") : "none") + " stop=" + (stopButton() ? "yes" : "no")
         + (SETTLE ? " area=" + areaText().length + "ch" : " answer=" + (a ? (a.busy ? "writing" : a.hasCopy ? "done" : "no-copy-btn") : "none"))
         + (att && att.children.length ? " attachments=" + att.children.length : "")
+        + (IMG ? " chips=" + chipCount() + " imgsignal=" + attachSignal() + " filepics=" + madePictures() + " imgs=" + document.images.length : "")
         + " visible=" + document.visibilityState + " focus=" + (document.hasFocus() ? "yes" : "no")
         + " path=" + location.pathname + " state=" + state;
     } catch (e) { return "snapshot failed: " + e.message; }
@@ -229,8 +234,7 @@
   const hasPrompt = text => {
     const have = editorText().length, want = norm(text).length;
     if (have >= Math.min(want, Math.max(1, want * 0.9))) return true;
-    const att = q("attachments");
-    return !!(att && att.children.length); // very long pastes can turn into an attachment chip
+    return chipCount() > attachBase;      // very long pastes can turn into an attachment chip (images we attached don't count)
   };
   // A plain text box (textarea/input): set its value the way the page's own code notices (React & co.)
   function setFieldValue(el, text) {
@@ -281,8 +285,141 @@
     throw new Error("Couldn't type the prompt into the input box");
   }
 
+  // ---------- images (site.images in the site file) ----------
+  // A job with "images": n asks AHK for them ("images-get" -> "images" {list:[{name, mime, b64}]}) - never
+  // through sessionStorage or logs - and attaches them BEFORE the prompt is typed. Each way in site.images.how
+  // is tried in order for the first image; the way that worked is used for the rest:
+  //   paste         = a paste event with the file on the input box (what Ctrl+V of an image does)
+  //   drop          = drag-and-drop events with the file on selectors.dropTarget / inputBox / the box
+  //   input         = the page's own <input type=file> (selectors.fileInput), set by script
+  //   trusted-input = the same input, filled by AHK through the DevTools protocol (DOM.setFileInputFiles)
+  // An image counts as attached when the box shows one more attachment. All or nothing: if one can't be
+  // attached the job fails before Send (unsent). Never clicks an "attach" button (it would open a file dialog).
+  const IMG = site.images || null;
+  let attachBase = 0;                     // chips in the box that are ours (images), not a long paste
+  let imagesUsed = false;                 // this page has had images attached (then a "clean" page has no chips left)
+  let attachPending = false;              // we may have put images in the box that weren't sent (a site may show no chips)
+  let imgWait = null;
+  const composer = () => q("inputBox") || (getEditor() && getEditor().closest("form")) || null;
+  // file chips in the input box
+  function chipCount() {
+    let n = 0;
+    const box = q("attachments");
+    if (box) n = box.children.length;
+    return Math.max(n, qa("attachmentItem").filter(shown).length);
+  }
+  // anything that shows an attachment appeared: chips, pictures in the input box area, or anywhere on the
+  // page a picture made from a file (blob:/data: address = a pasted image's thumbnail). Compared before/after.
+  // (2026-11-20, Google AI Mode: the pasted images showed, but with no chips or box area known to us, only
+  // the "made from a file" pictures and the Send button give it away - see attachedNow)
+  function madePictures() {
+    let n = 0;
+    for (const im of document.images) { const s = im.currentSrc || im.src || ""; if (/^(blob|data):/i.test(s) && shown(im)) n++; }
+    return n;
+  }
+  function attachSignal() {
+    let n = chipCount();
+    const c = composer();
+    if (c) n = Math.max(n, c.querySelectorAll("img,canvas").length);
+    return n + madePictures();
+  }
+  const sendEnabled = () => { const b = findSendButton(); return !!b && !btnDisabled(b); };
+  // attached since "before" ({sig, sendOff}): more attachment signs, or Send came on with an empty box
+  // (a site enables Send only when there is something to send)
+  const attachedNow = before => attachSignal() > before.sig || (before.sendOff && editorText() === "" && sendEnabled());
+  function imagesFromAhk(jobId) {
+    return new Promise(resolve => {
+      const tm = setTimeout(() => { imgWait = null; resolve(null); }, 15000);
+      imgWait = { jobId, done: list => { clearTimeout(tm); imgWait = null; resolve(list); } };
+      send({ t: "images-get", jobId });
+    });
+  }
+  function toFile(it, i) {
+    const bin = atob(it.b64 || ""), a = new Uint8Array(bin.length);
+    for (let k = 0; k < bin.length; k++) a[k] = bin.charCodeAt(k);
+    return new File([a], it.name || "image-" + (i + 1) + ".png", { type: it.mime || "image/png", lastModified: Date.now() });
+  }
+  function fileInput() {
+    const sels = SEL.fileInput.length ? SEL.fileInput : ['input[type="file"]'];
+    for (const s of sels) {
+      try {
+        const l = [...document.querySelectorAll(s)].filter(e => !e.disabled && (!e.accept || /image|\*/i.test(e.accept)));
+        if (l.length) return l[l.length - 1];
+      } catch {}
+    }
+    return null;
+  }
+  async function attachOne(how, file, idx, editor) {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    if (how === "paste") {
+      const e = getEditor() || editor;
+      e.focus();
+      e.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+      return true;
+    }
+    if (how === "drop") {
+      const t = q("dropTarget") || q("inputBox") || getEditor() || editor, r = t.getBoundingClientRect();
+      const o = { dataTransfer: dt, bubbles: true, cancelable: true, composed: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 };
+      document.body.dispatchEvent(new DragEvent("dragenter", o));
+      for (const type of ["dragenter", "dragover", "drop"]) t.dispatchEvent(new DragEvent(type, o));
+      return true;
+    }
+    if (how === "input" || how === "trusted-input") {
+      const inp = fileInput();
+      if (!inp) return false;
+      if (how === "input") {
+        inp.files = dt.files;
+        inp.dispatchEvent(new Event("input", { bubbles: true }));
+        inp.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }
+      document.querySelectorAll("[data-lcc-files]").forEach(x => x.removeAttribute("data-lcc-files"));
+      inp.setAttribute("data-lcc-files", "1");
+      const ok = await trusted("files", String(idx), 12000);
+      inp.removeAttribute("data-lcc-files");
+      return ok;
+    }
+    return false;
+  }
+  async function attachImages(job, count, editor) {
+    if (!IMG) throw new Error("this chat site can't take images (no \"images\" in its site file)");
+    const list = await imagesFromAhk(job.id);
+    if (!list || list.length !== count) throw new Error("the images didn't arrive from the pool");
+    const files = list.map(toFile);
+    imagesUsed = true;
+    attachPending = true;                 // until Send takes them (a failure leaves the page "not clean": reloaded)
+    const ways = Array.isArray(IMG.how) && IMG.how.length ? IMG.how : ["paste", "drop", "input", "trusted-input"];
+    const waitMs = IMG.attachWaitMs || 6000;
+    let worked = null;
+    for (let i = 0; i < files.length; i++) {
+      let ok = false;
+      for (const how of worked ? [worked] : ways) {
+        const b0 = { sig: attachSignal(), sendOff: !sendEnabled() }, t = performance.now();
+        if (!(await attachOne(how, files[i], i, editor))) { tr("image " + (i + 1) + ": no way to " + how + " here"); continue; }
+        if (await waitUntil(() => attachedNow(b0), waitMs)) {
+          ok = true; worked = how;
+          tr("image " + (i + 1) + " of " + files.length + " attached by " + how + " (" + Math.round(performance.now() - t) + " ms)");
+          break;
+        }
+        tr("image " + (i + 1) + ": " + how + " showed no attachment in " + waitMs + " ms");
+        if (attachedNow(b0)) { ok = true; worked = how; break; }   // just in time: never attach it twice
+      }
+      if (!ok) throw new Error("couldn't attach image " + (i + 1) + " of " + files.length + " to the chat box");
+      job.attached = true;
+    }
+    // uploads: done when the site shows no upload in progress (selectors.attachBusy), if it tells us
+    if (SEL.attachBusy.length) {
+      const t = performance.now(), upMs = IMG.uploadWaitMs || 60000;
+      await sleep(400);
+      if (!(await waitUntil(() => !qa("attachBusy").some(shown), upMs))) throw new Error("the images were still uploading after " + upMs / 1000 + " s");
+      tr("uploads finished (" + Math.round(performance.now() - t) + " ms)");
+    }
+    log("attached " + files.length + " image(s) by " + worked);
+  }
+
   // ---------- send (once) ----------
-  async function submit(editor, before, prompt) {
+  async function submit(editor, before, prompt, buttonWaitMs = 2000) {
     const href0 = location.href, stopBefore = stopButton();
     // in: the box emptied, a new question, the page moved, or a Stop button APPEARED (one that was already
     // there before sending proves nothing)
@@ -291,7 +428,7 @@
     const tries = [
       ["button", async () => {
         const w = performance.now();
-        const b = await waitUntil(() => { const x = findSendButton(); return x && !btnDisabled(x) ? x : null; }, 2000);
+        const b = await waitUntil(() => { const x = findSendButton(); return x && !btnDisabled(x) ? x : null; }, buttonWaitMs);
         if (!b) { tr("Send button not found / not enabled after " + Math.round(performance.now() - w) + " ms"); return false; }
         tr("Send button enabled (waited " + Math.round(performance.now() - w) + " ms) - clicking it");
         b.click(); return true;
@@ -481,6 +618,12 @@
       if (!editor) throw new Error("the input box wasn't found (signed out?)");
       tr("input box found (waited " + Math.round(performance.now() - we) + " ms)");
       stopIfAborted();
+      const nImg = m.images || 0;
+      if (nImg) {                             // images first: the prompt is typed after them
+        await attachImages(job, nImg, editor);
+        stopIfAborted();
+      }
+      attachBase = chipCount();
       const before = questionCount(), msgsBefore = qa("message").length;
       const ti = performance.now();
       try { how = await insertText(editor, m.prompt); }
@@ -489,8 +632,10 @@
       stopIfAborted();                        // replaced before Send: the newer prompt overwrites the box
       const baseline = SETTLE ? areaText() : "";   // the page as it is right before Send (typing can change it)
       resumeSave(m, "sent");                  // if Send loads a new page, that page waits for the answer (never types again)
-      sentBy = await submit(getEditor() || editor, before, m.prompt);   // never interrupted once Send is clicked
-      job.sent = true; pageUsed = true;
+      if (nImg && chipCount() < attachBase) throw new Error("the images left the chat box before Send");
+      // with images, Send may stay disabled while they upload: wait for it longer
+      sentBy = await submit(getEditor() || editor, before, m.prompt, nImg ? (IMG.uploadWaitMs || 60000) : 2000);   // never interrupted once Send is clicked
+      job.sent = true; pageUsed = true; attachPending = false;
       send({ t: "sent", jobId: job.id });
       const res = SETTLE ? await waitForAnswerSettle(job, m.prompt, baseline) : await waitForAnswerCopyButton(job, msgsBefore);
       send({ t: "result", jobId: job.id, ok: true, sent: true, text: res.text, markdown: res.markdown,
@@ -537,6 +682,12 @@
       else if (nextJob && nextJob.jobId === m.jobId) nextJob = null;
     }
     else if (m.t === "trusted-done") { const f = pending.get(m.reqId); if (f) { pending.delete(m.reqId); f(!!m.ok); } }
+    else if (m.t === "images") { if (imgWait && imgWait.jobId === m.jobId) imgWait.done(m.list || []); }
+    else if (m.t === "mem") {                 // memory audit: this page's own size (numbers only)
+      let heapMB = 0;
+      try { heapMB = Math.round(((performance.memory && performance.memory.usedJSHeapSize) || 0) / 1048576); } catch {}
+      send({ t: "mem", heapMB, nodes: document.getElementsByTagName("*").length });
+    }
     else if (m.t === "newchat") { if (!current) resetAndReady(); }
     else if (m.t === "ping") { send({ t: "state", state, path: location.hostname + location.pathname }); reportAccount(); }
   });

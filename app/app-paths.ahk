@@ -17,6 +17,10 @@ APP_DIR := A_ScriptDir
 APP_ROOT := AppParentDir(A_ScriptDir)
 DATA_DIR := APP_ROOT "\data"
 APP_VERSION := PkgReadVersion(APP_DIR)
+; This PC only, never a synced folder (OneDrive): browser sign-ins, and screenshots on their way to Copilot
+APP_LOCAL := EnvGet("LOCALAPPDATA") "\CaptionCompanion"
+; Images an app hands to the Copilot pool ("images" in an ask): the pool reads image files from here only
+APP_IMAGE_INBOX := APP_LOCAL "\pool-images"
 
 AppPathsInit()
 

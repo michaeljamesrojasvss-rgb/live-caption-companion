@@ -14,7 +14,9 @@
   "settleMs": 3000,
   "minAnswerMs": 4000,
   "stopByLabel": false,
+  "images": { "how": ["paste"], "max": 4, "attachWaitMs": 6000, "uploadWaitMs": 30000 },
   "selectors": {
+    "fileInput": ["input[type=\"file\"]"],
     "editor": ["textarea:not([name=\"q\"])", "[contenteditable=\"true\"][role=\"textbox\"]", "textarea"],
     "answerArea": ["[role=\"main\"]", "#rcnt", "body"]
   }

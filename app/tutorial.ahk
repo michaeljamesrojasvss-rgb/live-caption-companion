@@ -566,8 +566,8 @@ TutBuildSteps(name) {
             . "(If your helpers are named differently, pick the one that drafts a teammate message.)",
         "enter", () => TutOpenHelpers(),
         "ready", () => TutHelperReady(teammateId),
-        "okText", "The prompt is copied to your clipboard automatically. You can also see it in the "
-            . "preview box."))
+        "okText", "The prompt is copied to your clipboard automatically - paste it into Copilot, "
+            . "or click Copy again to copy it once more."))
 
     steps.Push(Map(
         "title", "Paste it into Copilot",
@@ -661,7 +661,7 @@ TutBuildSteps(name) {
         "body", "Chat / Transcript: two ways to look at the same call.`n"
             . "A- / A+: make the text smaller or bigger.`n"
             . "The pin button (top left): keep the Companion on top of other windows.`n"
-            . "Copy transcript: copies the whole call text.`n"
+            . "Copy transcript: right-click the chat or transcript - copies the whole call text.`n"
             . "Discard call: throws a call away instead of saving it (use it for tests).`n"
             . "Right-click in the chat: delete a bubble, undo, and the Live Captions tools.",
         "ready", () => true))

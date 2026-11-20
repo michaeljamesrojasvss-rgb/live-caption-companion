@@ -21,6 +21,28 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   added once, by id), `data\tasks.ini`. The Companion side is `app\tasks-link.ahk` (`TaskLink*`): starts
   it (on by default, tray toggle), the Tasks button, sends the call on screen + busy, answers "open".
   Tasks never reads call-history.json.
+- `app\copilot-pool.ahk` (+ `copilot-pool-worker.js`, prefix `Pool*`) - the Copilot pool: hidden Copilot pages
+  in WebView2 (`app\lib\`, see its README) that answer prompts. Its OWN app and process, **generic** (no
+  call words, like Tasks): text in, text out, one-off or kept "conversations". Work account only (personal
+  domains refused unless the testing switch is on). Never sends a prompt twice; its log never holds prompt
+  or answer text. Protocol at the top of `copilot-pool.ahk`. Companion side: `app\copilot-pool-link.ahk`
+  (`PoolLink*`): starts it (tray > Copilot assist, off by default), and the **💬 buttons** beside the helpers
+  (only while the pool is on): the prompt goes to a pool page, which appears as its own Copilot window
+  with the answer; you can keep chatting; it returns to the pool when you close it. 🤖, ➤ Ask and ⚡
+  auto-assist do NOT use the pool (they paste as before; their overhaul comes later).
+  **Auto helpers** (`app\auto-helpers.ahk`, `Auto*`): helpers ticked "Auto-run during calls" (right-click,
+  saved in `live-captions.ini` [AutoHelpers]) each get a dedicated pool "board" page, shown in the pool's
+  Live helpers window; at a new call (New call / 3CX ring) they get the full prompt, then follow-ups with
+  the new customer text when the customer pauses.
+  Design and plans (live helpers board): `docs\COPILOT-POOL.md`.
+- `app\debug-trace.ahk` (`Dbg*`) - one shared timing trace, `data\debug-trace.log`, written by the Companion,
+  the pool and each pool page (ms timestamps; every button click, helper prompts, pool queue/dispatch,
+  page steps with a snapshot of what the page shows). Never prompt/answer/caption text. Tray toggle.
+- `app\icons\*.ico` - each app's own icon (companion, tasks, pool, updater), drawn by
+  `tools\dev\make-icons.ps1`. Every app script starts with `TraySetIcon(...)` and its own
+  `SetCurrentProcessExplicitAppUserModelID` (own taskbar button; they all run on the same AutoHotkey32.exe).
+  A new app gets a new icon + app ID the same way. Every icon carries the owner's signature: a cyan
+  (#22D3EE) rounded-square ring around the app's coloured tile - keep it on any new icon.
 - `tools\dev\` - probes/inspectors (not shipped). `personal\` - the owner's private scripts (never shipped). `archive\` - old code.
 - Details: `docs\INSTALL-AND-UPDATES.md`.
 - Future plans (more apps, main helper as a hub that summons them, one bundle): `README.md` > Plans.
@@ -29,13 +51,20 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
 ## Rules for changes
 - Captions and the live call must keep working even if a feature module fails: wrap entry points
   in try/catch, report problems in the status line and the module's log.
-- Never click or type into 3CX. Never send to Copilot unless the existing safety checks pass.
+- Never click or type into 3CX. Never send to Copilot unless the existing safety checks pass (paste path:
+  the checks in `copilot-assist.ahk`; pool path: ready state + work account, and one send per prompt).
 - New user data goes in `DATA_DIR`; anything that ships goes in `app\`.
 - AutoHotkey v2 syntax traps that have bitten this project (there is no way to run AHK in Linux, so check by reading):
   - A one-line `try X` directly before `else` (even with `}` between) makes AHK attach the `else` to the
     `try`. Use braces around the try, or restructure.
   - A string in single quotes can't contain a single quote (and double-quoted strings need `` `" ``).
   - Put fat-arrow assignments in parentheses: `() => (x := 1)`.
+- GUI rendering traps (they caused black blocks over list headers and ghost pixels):
+  - A Text control added without `h` gets the height its text needs at the given width - a long
+    label becomes 2 lines tall and later paints over the control below it. Labels in resizable
+    windows always get an explicit `h` (e.g. `h20`).
+  - Never let controls overlap. After a layout pass, repaint the whole window once
+    (`RepaintWindow` in the Companion, `TaskRepaint` in Tasks), on a short timer.
 
 ## Releases
 Releases are automatic: every push to `main` that changes `app\`, `installer\`, `runtime\` or

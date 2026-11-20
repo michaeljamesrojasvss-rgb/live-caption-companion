@@ -1,7 +1,10 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
+try TraySetIcon(A_ScriptDir "\icons\companion.ico")   ; its own icon (tray, windows, taskbar) - not the AutoHotkey "H"
+try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionCompanion.Companion")   ; own taskbar button (not grouped under AutoHotkey)
 #Include app-paths.ahk           ; must stay first: sets DATA_DIR and APP_VERSION
 #Include error-log.ahk           ; right after: unhandled errors go to data\errors.log
+#Include debug-trace.ahk         ; shared timing trace (data\debug-trace.log)
 #Include UIA.ahk
 #Include Json.ahk
 #Include salesforce.ahk
@@ -16,6 +19,8 @@
 #Include import-merge.ahk
 #Include main-helper-host.ahk
 #Include tasks-link.ahk
+#Include copilot-pool-link.ahk
+#Include auto-helpers.ahk
 
 ; ==============================================================================
 ; State
@@ -51,7 +56,7 @@ historyLoadError := ""     ; why the history file could not be loaded (shown in 
 historyGui := ""
 chatView := true
 fontSize := 10
-HELPER_H := 260            ; fixed height of the helpers accordion panel
+HELPER_H := 260            ; helpers panel height before it is built (then: HelperPanelH, as tall as its contents)
 
 ; Review mode: look at a saved call in the main view while the live call keeps recording
 reviewCall := ""           ; the saved session being reviewed ("" = normal live view)
@@ -67,6 +72,7 @@ helpersVisible := false    ; accordion open/closed
 helperPanelBuilt := false  ; controls created on myGui yet?
 helperButtons := []
 helperMiniButtons := []    ; small icon buttons beside each helper (Copilot submit)
+helperPoolButtons := []    ; 💬 beside each helper: ask the Copilot pool (only while it's on)
 hStatusLine := ""
 hNone := ""
 hPreviewStatus := ""
@@ -99,7 +105,8 @@ micLogFile := micDataDir "\engine.log"
 MIC_INI := DATA_DIR "\live-captions.ini"
 WINDOW_MIN_W := 420          ; keep in sync with +MinSize420x480 (the top button row needs ~410)
 WINDOW_MIN_H := 480
-BOTTOM_WRAP_W := 690         ; below this client width the bottom buttons wrap onto two rows
+BOTTOM_WRAP_W := 560         ; below this client width the bottom buttons wrap onto two rows
+FRAME_COLOR := "3A4556"      ; the thin frames around the call buttons and the helpers panel
 BOTTOM_BAND_1 := 80          ; bottom band height: debug line + one row of buttons
 BOTTOM_BAND_2 := 114         ; ... and with two rows of buttons
 
@@ -160,7 +167,7 @@ myGui.BackColor := "11151D"
 myGui.SetFont("s10 cF1F5FB", "Segoe UI")
 pinned := false
 btnPin := myGui.Add("Button", "w30 h22", "📍")
-statusText := myGui.Add("Text", "x+8 w570", "Status: starting...")
+statusText := myGui.Add("Text", "x+8 w570 h20", "Status: starting...")
 myGui.Add("Text", "xm w640 c9BA8BA", "Current caption")
 current := myGui.Add("Edit", "w640 r4 ReadOnly +0x100 Background1B2431 cF1F5FB")
 btnChat    := myGui.Add("Button", "w90",      "Chat")
@@ -172,24 +179,24 @@ transcript := myGui.Add("Edit", "xm w640 r14 ReadOnly +0x100 Background1B2431 cF
 chatBox := myGui.Add("Edit", "xp yp wp hp ReadOnly +0x100 Background1B2431 cF1F5FB")
 reviewBanner := myGui.Add("Text", "xm w640 h28 +0x200 Background3B3215 cFBBF24 Hidden", "")
 btnLive := myGui.Add("Button", "x+6 w140 h28 Hidden", "Back to live call")
-notesLabel := myGui.Add("Text", "xm w640 c9BA8BA", NOTES_LABEL)
+notesLabel := myGui.Add("Text", "xm w640 h20 c9BA8BA", NOTES_LABEL)
 notesBox := myGui.Add("Edit", "xm w640 r3 Multi VScroll WantReturn +0x100 Background1B2431 cF1F5FB")
-debugText := myGui.Add("Text", "xm w640 c9BA8BA", "")
+debugText := myGui.Add("Text", "xm w640 h20 c9BA8BA", "")
 btnNew := myGui.Add("Button", "w90", "New call")
 btnDiscard := myGui.Add("Button", "x+8 w100", "Discard call")
 btnHist := myGui.Add("Button", "x+8 w100", "Call history")
 btnHelp := myGui.Add("Button", "x+8 w100", "Helpers ▼")
-btnCopy := myGui.Add("Button", "x+8 w125", "Copy transcript")
+; (Copy transcript is in the right-click menu of the chat / transcript view)
 ; a Text, not a Button: buttons can't be coloured (tasks-link.ahk paints it:
 ; green = all tasks of the call on screen done, orange = some still open)
 btnTasks := myGui.Add("Text", "x+8 w110 h28 +0x200 Center +Border Background2A3442 cF1F5FB", "Tasks ▸")
+callFrame := MakeFrame(myGui)                    ; the thin frame around the call buttons
 transcript.GetPos(&viewLeft, &viewTop)
 
 btnNew.OnEvent("Click", NewCall)
 btnDiscard.OnEvent("Click", DiscardCall)
 btnHist.OnEvent("Click", ShowHistoryWindow)
 btnHelp.OnEvent("Click", ToggleHelpers)
-btnCopy.OnEvent("Click", CopyTranscript)
 btnTasks.OnEvent("Click", TaskLinkOpen)
 notesBox.OnEvent("Change", NotesChanged)
 btnChat.OnEvent("Click",    (*) => SetView(true))
@@ -204,12 +211,28 @@ chatCtxMenu := Menu()
 chatCtxMenu.Add("Delete bubble", (*) => DeleteSelectedBubble())
 chatCtxMenu.Add("Undo delete`tCtrl+Z", (*) => UndoLastDelete())
 chatCtxMenu.Add("Deleted bubbles…", ShowRemovedWindow)
+chatCtxMenu.Add()
+chatCtxMenu.Add("Copy transcript", CopyTranscript)
+
+; Right-click menu on the plain Transcript view
+transCtxMenu := Menu()
+transCtxMenu.Add("Copy selected text", (*) => CopyTranscriptSelection())
+transCtxMenu.Add("Copy transcript", CopyTranscript)
 
 ; Intercept right-click on chatBox: pick bubble, show custom menu, suppress
 ; the Edit control's default context menu by blocking WM_RBUTTONDOWN entirely.
 OnMessage(0x0204, ChatRButtonDown)     ; WM_RBUTTONDOWN
 
 ChatRButtonDown(wParam, lParam, msg, hwnd) {
+    if (hwnd = transcript.Hwnd && !chatView) {       ; the plain Transcript view: its own small menu
+        SendMessage(0x00B0, sb := Buffer(4), se := Buffer(4), transcript.Hwnd)   ; EM_GETSEL
+        if (NumGet(sb, "UInt") = NumGet(se, "UInt"))
+            transCtxMenu.Disable("Copy selected text")
+        else
+            transCtxMenu.Enable("Copy selected text")
+        transCtxMenu.Show()
+        return 0
+    }
     if (hwnd != chatBox.Hwnd || !chatView)
         return
     x := lParam & 0xFFFF
@@ -265,6 +288,9 @@ UpdInit()
 MergeInit()
 MainHelperInit()
 TaskLinkInit()
+DbgInitCompanion()                 ; debug trace: tray items + logs every button click
+PoolLinkInit()                     ; after AssistInit: adds to its tray menu
+AutoInit()                         ; auto helpers (after PoolLinkInit)
 TutInit()
 
 ; Mic captions tray toggle (only shown if whisper-stream is available)
@@ -923,6 +949,7 @@ NewCall(*) {
 	CallerOnNewCall()
     statusText.Text := "Status: new call started"
     TaskLinkNewItem()                    ; Tasks: this call is on screen, and it's new
+    try AutoHelpersNewCall()             ; auto helpers start on this call
     try TutNote("newcall")               ; the tutorial may be waiting for this
 }
 
@@ -1096,11 +1123,12 @@ LoadHelperActions() {
 ; Controls are added Hidden; ToggleHelpers shows/hides them.
 EnsureHelperPanel() {
     global helperPanelBuilt, hStatusLine, hNone, hPreviewStatus, hPreview
-    global hBtnCopy, hBtnReload, hBtnOpen
+    global hBtnCopy, hBtnReload, hBtnOpen, helperFrame
 
     if helperPanelBuilt
         return
 
+    helperFrame := MakeFrame(myGui)                     ; the thin frame around the helpers panel
     hStatusLine   := myGui.Add("Text",   "x10 y0 w400 c9BA8BA Hidden", "")
     hNone         := myGui.Add("Text",   "x10 y0 w400 c9BA8BA Hidden",
                         "No helper buttons yet. Add actions to call-helpers.json, then click Reload.")
@@ -1155,10 +1183,12 @@ WithRedrawPaused(fn) {
 }
 
 ShowHideHelperControls(vis) {
+    for c in helperFrame                    ; (LayoutHelperPanel places it while the panel is open)
+        c.Visible := vis
     hStatusLine.Visible    := vis
     hNone.Visible          := (vis && helperActions.Length = 0)
     hPreviewStatus.Visible := vis
-    hPreview.Visible       := vis
+    hPreview.Visible       := false     ; the prompt box is retired: it still holds the last prompt (Copy again) but is never shown
     hBtnCopy.Visible       := vis
     hBtnReload.Visible     := vis
     hBtnOpen.Visible       := vis
@@ -1166,6 +1196,9 @@ ShowHideHelperControls(vis) {
         helperButtons[A_Index].Visible := vis
     Loop Min(helperActions.Length, helperMiniButtons.Length)
         helperMiniButtons[A_Index].Visible := vis
+    poolVis := vis && PoolLinkEnabled()
+    Loop Min(helperActions.Length, helperPoolButtons.Length)
+        helperPoolButtons[A_Index].Visible := poolVis
 }
 
 RebuildHelperButtons(info := "") {
@@ -1176,17 +1209,18 @@ RebuildHelperButtons(info := "") {
 }
 
 RebuildHelperButtonsCore(info := "") {
-    global helperButtons, helperMiniButtons
+    global helperButtons, helperMiniButtons, helperPoolButtons
 
     EnsureHelperPanel()
+    poolOn := PoolLinkEnabled()
 
     ; A single control cannot be destroyed in AutoHotkey v2, so keep a pool of
     ; buttons: reuse them for the current helpers and hide any extras.
     n := helperActions.Length
     for i, action in helperActions {
         label := Trim(action["label"])
-        shown := StrReplace(label, "&", "&&")
-        w := Max(110, StrLen(label) * 8 + 30)
+        shown := (AutoIsOn(action["id"]) ? "⟳ " : "") StrReplace(label, "&", "&&")   ; ⟳ = auto helper
+        w := Max(110, StrLen(shown) * 8 + 30)
         ; Main button — clipboard only
         if (i <= helperButtons.Length) {
             btn := helperButtons[i]
@@ -1195,6 +1229,7 @@ RebuildHelperButtonsCore(info := "") {
         } else {
             btn := myGui.Add("Button", "x0 y0 w" w " h30 Hidden", shown)
             btn.OnEvent("Click", HelperClickedAt.Bind(i))
+            btn.OnEvent("ContextMenu", HelperMenuAt.Bind(i))       ; right-click: auto-run, ...
             helperButtons.Push(btn)
         }
         btn.Visible := helpersVisible
@@ -1204,14 +1239,25 @@ RebuildHelperButtonsCore(info := "") {
         } else {
             mini := myGui.Add("Button", "x0 y0 w30 h30 Hidden", "🤖")
             mini.OnEvent("Click", HelperCopilotAt.Bind(i))
+            mini.OnEvent("ContextMenu", HelperMenuAt.Bind(i))
             helperMiniButtons.Push(mini)
         }
         helperMiniButtons[i].Visible := helpersVisible
+        ; 💬 — ask the Copilot pool (answer in its own Copilot window); only while the pool is on
+        if (i > helperPoolButtons.Length) {
+            pb := myGui.Add("Button", "x0 y0 w30 h30 Hidden", "💬")
+            pb.OnEvent("Click", HelperPoolAt.Bind(i))
+            pb.OnEvent("ContextMenu", HelperMenuAt.Bind(i))
+            helperPoolButtons.Push(pb)
+        }
+        helperPoolButtons[i].Visible := helpersVisible && poolOn
     }
     Loop helperButtons.Length - n
         helperButtons[n + A_Index].Visible := false
     Loop helperMiniButtons.Length - n
         helperMiniButtons[n + A_Index].Visible := false
+    Loop helperPoolButtons.Length - n
+        helperPoolButtons[n + A_Index].Visible := false
 
     hNone.Visible := (helpersVisible && n = 0)
     if (info != "")
@@ -1224,35 +1270,76 @@ RebuildHelperButtonsCore(info := "") {
 
 ; Each pooled button runs whichever helper currently sits at its position
 HelperClickedAt(i, *) {
-    if (i <= helperActions.Length)
+    if (i <= helperActions.Length) {
+        t := A_TickCount
         HelperClicked(helperActions[i])
+        DbgHelper("helper (copy)", i, t)
+    }
+}
+
+; Right-click on a helper's buttons: auto-run during calls, open the Live helpers window
+HelperMenuAt(i, *) {
+    if (i <= helperActions.Length) {
+        try DbgTrace("click", "right-click on helper '" Trim(helperActions[i]["label"]) "'")
+        AutoHelperMenu(helperActions[i])
+    }
+}
+
+; 💬 button: prepare the prompt, then ask the Copilot pool - the answer opens in its own Copilot window
+HelperPoolAt(i, *) {
+    if (i <= helperActions.Length) {
+        t := A_TickCount
+        HelperClicked(helperActions[i])
+        DbgHelper("💬 pool", i, t)
+        PoolLinkAskInWindow(lastCopiedPrompt, Trim(helperActions[i]["label"]))
+    }
 }
 
 ; Mini icon button: prepare prompt, copy, then submit to Copilot
 HelperCopilotAt(i, *) {
     if (i <= helperActions.Length) {
+        t := A_TickCount
         HelperClicked(helperActions[i])
+        DbgHelper("🤖 paste", i, t)
         SubmitToCopilot()
     }
 }
 
-LayoutHelperPanel(width, height) {
+; Trace: which helper button, how long building the prompt took, and its size (never its text)
+DbgHelper(kind, i, t) {
+    try DbgTrace("helper", kind " '" Trim(helperActions[i]["label"]) "': prompt built in " (A_TickCount - t)
+        " ms, " StrLen(lastCopiedPrompt) " chars" (IsObject(reviewCall) ? " (reviewing an old call)" : ""))
+}
+
+; Height the helpers panel needs at this width: just its rows of buttons, the status lines and
+; the Copy again / Reload / Edit helpers row (the old prompt box is gone, so no empty space)
+HelperPanelH(width) {
     if !helperPanelBuilt
-        return
+        return HELPER_H
+    return LayoutHelperPanel(width, 0, true)
+}
+
+; measure = true: nothing moves, it only returns the height the panel needs
+LayoutHelperPanel(width, height, measure := false) {
+    if !helperPanelBuilt
+        return 0
 
     margin  := 10
-    ; Panel occupies the HELPER_H band directly above the debug/button row (80px)
+    ; Panel sits directly above the debug/button row, as tall as its contents
     bandH   := BottomBandH(width)
-    panelY  := height - bandH - HELPER_H
-    y       := panelY
+    panelY  := measure ? 0 : height - bandH - HelperPanelH(width)
+    y       := panelY + 6                 ; inside its frame
 
-    hStatusLine.Move(margin, y, width - 2 * margin)
+    if !measure
+        hStatusLine.Move(margin, y, width - 2 * margin)
     y += 24
 
     n := Min(helperActions.Length, helperButtons.Length)
     nm := Min(helperActions.Length, helperMiniButtons.Length)
+    np := PoolLinkEnabled() ? Min(helperActions.Length, helperPoolButtons.Length) : 0
     if (n = 0) {
-        hNone.Move(margin, y, width - 2 * margin)
+        if !measure
+            hNone.Move(margin, y, width - 2 * margin)
         y += 30
     } else {
         x    := margin
@@ -1262,29 +1349,39 @@ LayoutHelperPanel(width, height) {
             btn := helperButtons[A_Index]
             btn.GetPos(, , &bw)
             pairW := bw + 2 + miniW  ; main + gap + mini icon
+            if (A_Index <= np)
+                pairW += 2 + miniW   ; + 💬
             if (x > margin && x + pairW > width - margin) {
                 x := margin
                 y += rowH
             }
-            btn.Move(x, y)
-            if (A_Index <= nm)
-                helperMiniButtons[A_Index].Move(x + bw + 2, y, miniW)
+            if !measure {
+                btn.Move(x, y)
+                if (A_Index <= nm)
+                    helperMiniButtons[A_Index].Move(x + bw + 2, y, miniW)
+                if (A_Index <= np)
+                    helperPoolButtons[A_Index].Move(x + bw + 2 + miniW + 2, y, miniW)
+            }
             x += pairW + 7
         }
         y += rowH + 6
     }
 
-    hPreviewStatus.Move(margin, y, width - 2 * margin)
+    if !measure
+        hPreviewStatus.Move(margin, y, width - 2 * margin)
     y += 22
 
-    ; Action buttons sit 38 px above the bottom of the panel
-    by := height - bandH - 38
-    previewH := Max(30, by - y - 4)
-    hPreview.Move(margin, y, width - 2 * margin, previewH)
+    ; the action buttons right under the "PROMPT · COPIED" line
+    by := y
+    hBtnCopy.GetPos(, , , &bh)
+    frameH := by + bh + 5 - panelY        ; the frame: 6 above the first line, 5 below the buttons
+    if measure
+        return frameH + 6                 ; + a gap before the call buttons' frame
 
     hBtnCopy.Move(margin,       by)
     hBtnReload.Move(margin + 130, by)
     hBtnOpen.Move(margin + 240, by)
+    PlaceFrame(helperFrame, margin - 5, panelY, width - 2 * (margin - 5), frameH, helpersVisible)
 }
 
 BuildContextBlock() {
@@ -1385,6 +1482,7 @@ SubmitToCopilot() {
 ; Step-by-step log next to the script (window info only, never transcript text).
 ; Change "true" to "false" to switch it off.
 CopilotLog(msg) {
+    try DbgTrace("paste", msg)
     static enabled := true
     if !enabled
         return
@@ -2232,6 +2330,35 @@ CopyTranscript(*) {
     statusText.Text := "Status: transcript copied to clipboard"
 }
 
+; Transcript view's right-click "Copy selected text" (its own menu replaces the Edit control's)
+CopyTranscriptSelection() {
+    SendMessage(0x0301, 0, 0, transcript.Hwnd)          ; WM_COPY
+    statusText.Text := "Status: selected text copied to clipboard"
+}
+
+; A thin frame (4 one-pixel lines) that visually groups controls. The lines sit in the gaps
+; around the controls, never on top of them (overlapping controls paint over each other).
+MakeFrame(g) {
+    f := []
+    Loop 4
+        f.Push(g.Add("Text", "x0 y0 w1 h1 Background" FRAME_COLOR " Hidden", ""))
+    return f
+}
+
+PlaceFrame(f, x, y, w, h, vis := true) {
+    if !vis {
+        for c in f
+            c.Visible := false
+        return
+    }
+    f[1].Move(x, y, w, 1)              ; top
+    f[2].Move(x, y + h - 1, w, 1)      ; bottom
+    f[3].Move(x, y, 1, h)              ; left
+    f[4].Move(x + w - 1, y, 1, h)      ; right
+    for c in f
+        c.Visible := true
+}
+
 RefreshDebug() {
     quiet := lastChatTick = 0 ? "-" : Round((A_TickCount - lastChatTick) / 1000, 1) . "s"
     debugText.Text := "changes " changeCount " · lines " sessionLines.Length
@@ -2246,7 +2373,7 @@ GuiResize(thisGui, minMax, width, height) {
     bannerH := IsObject(reviewCall) ? 34 : 0     ; room for the "reviewing" banner
 	notesH := NotesHeight()
     current.Move(, , width - 20)
-    panelSpace := helpersVisible ? HELPER_H : 0
+    panelSpace := helpersVisible ? HelperPanelH(width) : 0
 	callerH := CallerStripHeight()
     bandH := BottomBandH(width)
     newH := Max(60, height - viewTop - bandH - panelSpace - notesH - bannerH - callerH)
@@ -2266,7 +2393,16 @@ GuiResize(thisGui, minMax, width, height) {
     UpdLayout(width, height)
     if (helpersVisible)
         LayoutHelperPanel(width, height)
+    SetTimer(RepaintMain, -60)                       ; once the moving is over: no leftover pixels
 }
+
+RepaintMain() => RepaintWindow(myGui.Hwnd)
+
+; Moving or hiding a control doesn't repaint the spot it left, so old pixels (bits of buttons, lists)
+; could stay on screen. After every layout, the whole window and all its controls are repainted once.
+RepaintWindow(hwnd) {
+    try DllCall("RedrawWindow", "Ptr", hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x1 | 0x4 | 0x80 | 0x100 | 0x400)
+}   ; RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW | RDW_FRAME
 
 ; Height of the bottom band (debug line + buttons). Narrow windows wrap the
 ; buttons onto a second row instead of letting them run off the edge.
@@ -2274,16 +2410,20 @@ BottomBandH(width) {
     return width < BOTTOM_WRAP_W ? BOTTOM_BAND_2 : BOTTOM_BAND_1
 }
 
-; Places the debug line and the New / Discard / History / Helpers / Copy buttons
+; Places the debug line and the New / Discard / History / Helpers / Tasks buttons, in their frame
 BottomRowLayout(width, height) {
+    btnNew.GetPos(, , , &bh)
     if (width < BOTTOM_WRAP_W) {
         debugText.Move(, height - BOTTOM_BAND_2 + 10, width - 20)
         PlaceButtonRow([btnNew, btnDiscard, btnHist], viewLeft, height - 74)
-        PlaceButtonRow([btnHelp, btnCopy, btnTasks], viewLeft, height - 40)
+        PlaceButtonRow([btnHelp, btnTasks], viewLeft, height - 40)
+        top := height - 74
     } else {
         debugText.Move(, height - BOTTOM_BAND_1 + 10, width - 20)
-        PlaceButtonRow([btnNew, btnDiscard, btnHist, btnHelp, btnCopy, btnTasks], viewLeft, height - 40)
+        PlaceButtonRow([btnNew, btnDiscard, btnHist, btnHelp, btnTasks], viewLeft, height - 40)
+        top := height - 40
     }
+    PlaceFrame(callFrame, viewLeft - 5, top - 5, width - 2 * (viewLeft - 5), height - 40 + bh + 5 - (top - 5))
 }
 
 PlaceButtonRow(buttons, x, y) {

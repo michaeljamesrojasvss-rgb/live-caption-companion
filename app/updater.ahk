@@ -1,6 +1,8 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Off
 #NoTrayIcon
+try TraySetIcon(A_ScriptDir "\icons\updater.ico")     ; its own icon (its windows)
+try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionCompanion.Updater")
 #Include Json.ahk
 #Include package-lib.ahk
 

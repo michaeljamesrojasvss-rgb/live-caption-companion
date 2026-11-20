@@ -1,5 +1,7 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
+try TraySetIcon(A_ScriptDir "\..\app\icons\companion.ico")
+try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionCompanion.Setup")
 #Include %A_ScriptDir%\..\app\Json.ahk
 #Include %A_ScriptDir%\..\app\package-lib.ahk
 
@@ -249,7 +251,8 @@ SetupImport(oldDir, dataDir) {
 SetupShortcut(root, lnk) {
     exe := root "\runtime\AutoHotkey32.exe"
     script := root "\app\" PKG_MAIN_SCRIPT
-    try FileCreateShortcut(exe, lnk, root "\app", '"' script '"', "Live Caption Companion", exe)
+    icon := root "\app\icons\companion.ico"           ; the Companion's own icon, not AutoHotkey's "H"
+    try FileCreateShortcut(exe, lnk, root "\app", '"' script '"', "Live Caption Companion", FileExist(icon) ? icon : exe)
 }
 
 SetupLaunch(root) {

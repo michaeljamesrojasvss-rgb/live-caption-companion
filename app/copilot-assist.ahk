@@ -6,7 +6,7 @@
 ;     using copilot-targets.ini - a list you can teach with the tray menu.
 ;   * Sends a prompt safely: paste, read the message box back, and press Enter
 ;     only if the text is really there and Copilot is still the active window.
-;   * Auto-assist (⚡ button): right after the customer stops talking, sends the
+;   * RETIRED (no button, never starts - auto helpers replace it): Auto-assist (⚡ button): right after the customer stops talking, sends the
 ;     helper you chose to Copilot - but ONLY while you are not touching the
 ;     mouse or keyboard. It then switches straight back to your window.
 ;
@@ -55,9 +55,9 @@ AssistInit() {
     global assistOn
     try {
         AssistEnsureTargets()
-        AssistBuildUi()
+        ; the ⚡ and ➤ Ask buttons are retired (auto helpers replace them): AssistBuildUi() is not called
         AssistBuildMenu()
-        assistOn := (AssistSetting("AutoOn") = "1") && IsObject(AssistHelper())
+        assistOn := false                        ; ⚡ auto-assist is retired: never starts, even if it was on before
         AssistRefreshButton()
         SetTimer(AssistTick, 250)
         AssistLog("started")
@@ -88,7 +88,7 @@ AssistSendManual(prompt) {
     if (reason = "") {
         statusText.Text := "Status: prompt sent to Copilot"
     } else {
-        statusText.Text := "Status: not sent to Copilot (" AssistPlain(reason) ") - the prompt is still in the preview box"
+        statusText.Text := "Status: not sent to Copilot (" AssistPlain(reason) ") - the prompt is still on your clipboard (Helpers > Copy again)"
         AssistLog("manual send stopped: " AssistPlain(reason))
     }
 }
@@ -203,9 +203,6 @@ AssistSyncCall() {
 AssistBuildMenu() {
     global assistTrayMenu
     m := Menu()
-    m.Add("Auto-assist on/off", AssistSafe(() => AssistSetOn(!assistOn)))
-    m.Add("Choose auto-assist helper…", AssistSafe(AssistPickHelper))
-    m.Add()
     m.Add("Learn: Copilot message box", AssistSafe(() => AssistStartLearn("Input")))
     m.Add("Learn: Copilot Send button", AssistSafe(() => AssistStartLearn("Send")))
     m.Add("Learn: Copilot New chat button", AssistSafe(() => AssistStartLearn("NewChat")))
@@ -757,5 +754,6 @@ AssistReport(err, where := "") {
 }
 
 AssistLog(line) {
+    try DbgTrace("assist", line)
     try FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") "  " line "`n", ASSIST_LOG, "UTF-8")
 }

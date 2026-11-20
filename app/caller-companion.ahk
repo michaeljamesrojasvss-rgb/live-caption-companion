@@ -12,7 +12,7 @@
 ;   * Auto "new call" never throws anything away: the previous call is saved
 ;     first, and it is skipped during an active call or while a dialog is open.
 ;   * Manual paths always work, with or without 3CX:
-;       📞 button (set the caller by hand), right-click "Search in Salesforce",
+;       ✎ on the caller strip (set the caller by hand; the 📞 button is retired), right-click "Search in Salesforce",
 ;       tray > 3CX caller > Simulate incoming call, and the normal New call button.
 ;   * Settings: live-captions.ini, section [Caller] (also in the tray menu).
 ; ==============================================================================
@@ -175,9 +175,7 @@ CallerBuildUi() {
     global callerUiBuilt, callerBtnToolbar, callerStripText, callerBtnSfNum
     global callerBtnSfName, callerBtnCopy, callerBtnEdit, callerBtnClose
 
-    btnPrev.GetPos(&px, &py, &pw, &ph)
-    callerBtnToolbar := myGui.Add("Button", Format("x{} y{} w40 h{}", px + pw + 8, py, ph), "📞")
-    callerBtnToolbar.OnEvent("Click", CallerSafe(CallerManualEntry))
+    ; (the 📞 toolbar button is retired; ✎ on the caller strip still sets the caller by hand)
 
     callerStripText := myGui.Add("Text", "x0 y0 w100 h28 +0x200 Background16352A cA7F3D0 Hidden", "")
     callerBtnSfNum  := myGui.Add("Button", "x0 y0 w60 h28 Hidden", "SF #")
@@ -304,6 +302,7 @@ CallerOnRing(numberField, nameField, source) {
     if !waiting {
         CallerSaveToRecord()
         TaskLinkNewItem()                               ; Tasks: a new call (its checklist)
+        try AutoHelpersNewCall()                        ; auto helpers start on this call
     }
     CallerRefresh()
     if CallerFlag("Popup")

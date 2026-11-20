@@ -6,3 +6,5 @@
 *.json text eol=crlf
 *.exe  binary
 *.zip  binary
+*.dll  binary
+*.ico binary

@@ -67,6 +67,16 @@ now (see below).
 - Next for Tasks: a guided tutorial (like `tutorial.ahk`), multi-select (Ctrl+click to mark
   several tasks, then act on all of them), maybe "dock beside the Companion".
 
+### Copilot pool and the 💬 buttons (built, being tested - 2026.11.20)
+
+- Hidden Copilot pages inside AutoHotkey (WebView2), its own app and process, generic like
+  Tasks. 💬 beside a helper sends its prompt there and shows that Copilot page as a window with
+  the answer, ready for follow-up chat. 🤖 / ➤ Ask / ⚡ are unchanged. Off by default.
+  Full design: `docs\COPILOT-POOL.md`. **Still to test: the work account on the work PC.**
+- Later, on top of it: a **live helpers board** (chosen helpers answering in real time during a
+  call, with context sent in advance at call start), then moving the extension's features
+  (Outlook buttons, WO checker) into AHK and retiring the extension. See the same doc.
+
 ### Companion UI overhaul (agreed, not started)
 
 - The Companion's tray menu and window are getting crowded. Plan: one **Settings window** (like

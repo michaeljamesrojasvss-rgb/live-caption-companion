@@ -1,5 +1,7 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Off
+try TraySetIcon(A_ScriptDir "\icons\tasks.ico")       ; its own icon (tray, windows, taskbar)
+try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionCompanion.Tasks")       ; own taskbar button
 #Include app-paths.ahk
 #Include Json.ahk
 #Include tasks-alert.ahk
@@ -632,12 +634,12 @@ TaskBuildGui() {
     }
     tkTree := tkGui.Add("TreeView", "x10 y" TASK_TREE_TOP " w600 h300 Checked -ReadOnly Background1B2431 cF1F5FB")
     tkSplitA := tkGui.Add("Text", "x10 w600 h6 +0x100 Background2A3442", "")    ; 0x100 = gets clicks
-    tkUpLbl := tkGui.Add("Text", "x10 w400 c9BA8BA", "UP NEXT  -  overdue first, then soonest (click to open the task and its call)")
+    tkUpLbl := tkGui.Add("Text", "x10 w400 h20 c9BA8BA", "UP NEXT  -  overdue first, then soonest (click to open the task and its call)")
     tkShowFinished := tkGui.Add("Checkbox", "w180 Checked" taskShowFinished, "Show finished today")
     tkShowFinished.OnEvent("Click", TaskOnShowFinished)
     tkList := tkGui.Add("ListView", "x10 w600 h110 -Multi NoSortHdr Background1B2431 cF1F5FB", ["When", "Task", "Linked to"])
     tkSplitB := tkGui.Add("Text", "x10 w600 h6 +0x100 Background2A3442", "")
-    tkNotesLbl := tkGui.Add("Text", "x10 w600 c9BA8BA", "NOTES")
+    tkNotesLbl := tkGui.Add("Text", "x10 w600 h20 c9BA8BA", "NOTES")
     tkNotes := tkGui.Add("Edit", "x10 w600 h64 Multi WantReturn VScroll Background1B2431 cF1F5FB Disabled")
     tkTimerLbl := tkGui.Add("Text", "x10 w44 c9BA8BA", "Timer")
     tkTimerBtns := []
@@ -649,7 +651,7 @@ TaskBuildGui() {
     tkBtnCustom := tkGui.Add("Button", "w76 h26", "Custom…")
     tkBtnStop := tkGui.Add("Button", "w56 h26", "Stop")
     tkBtnPlan := tkGui.Add("Button", "w70 h26", "Plan…")
-    tkStatus := tkGui.Add("Text", "x10 w600 c9BA8BA", "Drag tasks to move them · right-click for more · ? for keys")
+    tkStatus := tkGui.Add("Text", "x10 w600 h20 c9BA8BA", "Drag tasks to move them · right-click for more · ? for keys")
 
     tkView.OnEvent("Change", TaskOnViewChange)
     tkShowDone.OnEvent("Click", TaskOnShowDone)
@@ -733,6 +735,13 @@ TaskOnSize(g, minMax, w, h) {
     tkList.ModifyCol(1, 120)
     tkList.ModifyCol(2, Max(120, Round((cw - 150) * 0.6)))
     tkList.ModifyCol(3, Max(100, cw - 150 - Round((cw - 150) * 0.6)))
+    SetTimer(TaskRepaint, -60)                       ; once the moving is over: no leftover pixels
+}
+
+; Moving a control doesn't repaint the spot it left, so old pixels could stay on screen: after every
+; layout the whole window and all its controls are repainted once
+TaskRepaint() {
+    try DllCall("RedrawWindow", "Ptr", tkGui.Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x1 | 0x4 | 0x80 | 0x100 | 0x400)
 }
 
 TaskRelayout() {

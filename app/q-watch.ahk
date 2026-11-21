@@ -40,6 +40,10 @@ q_lastKey := ""
 q_missCount := 0
 QW_Described := false        ; the Q icon element was described in the log
 try DllCall("SetThreadDpiAwarenessContext", "Ptr", -4, "Ptr")   ; real pixels: UIA, window and picture coordinates agree
+; 3CX on another virtual desktop is "cloaked", which AutoHotkey treats as a hidden window. Without this every
+; Win* call on it (WinGetMinMax, ...) fails with "Target window not found" and the other-desktop reading below is never reached.
+DetectHiddenWindows(true)
+QW_LastVia := ""             ; which child window gave the Q icon on another desktop (logged when it changes)
 
 if Q_TARGET {
     A_IconHidden := true
@@ -80,7 +84,7 @@ QW_Tick() {
 ; 3CX, so its picture is old: there Q is read from 3CX's accessibility info (UI Automation), using what
 ; was learned on this desktop - which info goes with Q on, and which with Q off (QW_Learn).
 QW_ReadState() {
-    global q_missCount
+    global q_missCount, QW_LastVia
     hwnd := QW_Find3cx()
     if !hwnd
         return ProcessExist("3CXSoftphone.exe") ? ["no3cx", "3CX is running but its window is closed (only in the tray)"]
@@ -91,14 +95,27 @@ QW_ReadState() {
 
     root := UIA.ElementFromHandle(hwnd)
     el := QW_FindQ(root)
+    via := ""
+    if (!IsObject(el) && away)                   ; Windows may leave only the title bar in the top window's tree
+        el := QW_FindQAway(hwnd, &via)
     if !IsObject(el) {
         q_missCount += 1
         if (q_missCount = 1 || Mod(q_missCount, 30) = 0) {
             QW_Log("Q icon element not found" (away ? " (3CX is on another virtual desktop)" : "")
                 " (is the dialpad view showing? set ElementId / ElementName in [QAlert])")
-            QW_DumpTop(root, hwnd)
+            if away
+                QW_DiagAway(hwnd, root)
+            else
+                QW_DumpTop(root, hwnd)
         }
-        return ["unknown", "Q icon element not found"]
+        msg := away ? "3CX is on another virtual desktop and Windows hides its Q icon from accessibility tools"
+            : "Q icon element not found"
+        return ["unknown", msg]
+    }
+    if (via != QW_LastVia) {
+        QW_LastVia := via
+        if (via != "")
+            QW_Log("on another virtual desktop the Q icon was found through the " via)
     }
     if (q_missCount != 0 || !QW_Described)
         QW_Describe(el)
@@ -317,6 +334,80 @@ QW_DumpTop(root, hwnd) {
         }
         QW_Log("--- end of list ---")
     }
+}
+
+; On another virtual desktop Windows usually leaves only the title bar in the top window's accessibility
+; tree. The content of a WinUI window lives in child windows, so try each one as its own UIA root.
+; Returns the Q icon element or "";  via = which child window it was found in.
+QW_FindQAway(hwnd, &via) {
+    via := ""
+    kids := []
+    try kids := WinGetControlsHwnd("ahk_id " hwnd)
+    n := 0
+    for kid in kids {
+        n += 1
+        if (n > 8)
+            break
+        try {
+            el := QW_FindQ(UIA.ElementFromHandle(kid))
+            if IsObject(el) {
+                via := "child window " QW_ClassOf(kid)
+                return el
+            }
+        }
+    }
+    return ""
+}
+
+QW_ClassOf(h) {
+    try return WinGetClass("ahk_id " h)
+    return ""
+}
+
+; Diagnostics for 3CX on another virtual desktop (logged at the first miss, then every ~5 min):
+; which windows 3CX has and what UI Automation still shows in each. No names/text are logged except
+; elements that look like the Q / queue / status icon - customer names must not end up in the log.
+QW_DiagAway(hwnd, root) {
+    c := 0
+    try DllCall("dwmapi\DwmGetWindowAttribute", "Ptr", hwnd, "UInt", 14, "UInt*", &c, "UInt", 4)
+    QW_Log("--- 3CX on another virtual desktop: what Windows still shows of it (cloaked=" c ") ---")
+    roots := [["top window", root]]
+    kids := []
+    try kids := WinGetControlsHwnd("ahk_id " hwnd)
+    n := 0
+    for kid in kids {
+        n += 1
+        if (n > 12)
+            break
+        vis := 0
+        try vis := (WinGetStyle("ahk_id " kid) & 0x10000000) ? 1 : 0
+        QW_Log("   child window " QW_ClassOf(kid) "  visible=" vis)
+        if (n <= 8) {
+            try roots.Push(["child window " QW_ClassOf(kid), UIA.ElementFromHandle(kid)])
+        }
+    }
+    for item in roots {
+        try {
+            found := item[2].FindAll(UIA.TrueCondition, 4)
+            QW_Log("   " item[1] ": " found.Length " accessible elements")
+            shown := 0
+            for el in found {
+                line := ""
+                try line := el.LocalizedType " | " el.AutomationId " | " el.ClassName
+                nm := ""
+                try nm := el.Name
+                if RegExMatch(nm, "i)^(q|queue|queues|agent|status|available|log ?in|logged.*)$")
+                    line .= " | name=" nm
+                QW_Log("      " line)
+                shown += 1
+                if (shown >= 40)
+                    break
+            }
+        } catch as err {
+            QW_Log("   " item[1] ": could not be read (" err.Message ")")
+        }
+    }
+    QW_Log("--- end of list ---")
 }
 
 QW_Ini(key, default) {

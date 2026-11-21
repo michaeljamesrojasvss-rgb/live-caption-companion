@@ -5,6 +5,9 @@ class JNull {
 
 class Json {
     static Null := JNull()
+    ; Optional Map: object -> its finished JSON text. Stringify uses the text instead of walking the object
+    ; again. Only for objects that did not change since the text was made (see SaveHistory); "" = off.
+    static Cache := ""
 
     static Parse(text) {
         pos := 1
@@ -23,6 +26,8 @@ class Json {
             return String(v)
         if (v is JNull)
             return "null"
+        if (this.Cache is Map && this.Cache.Has(v))
+            return this.Cache[v]
         inner := indent "  "
         if (t = "Map") {
             if (v.Count = 0)
@@ -61,9 +66,10 @@ class Json {
     }
 
     static _Ws(text, &pos) {
-        len := StrLen(text)
-        while (pos <= len && InStr(" `t`r`n", SubStr(text, pos, 1)))
-            pos += 1
+        ; one regex call per run of white space (the history file is indented, so a character-by-character
+        ; loop here was most of the time spent loading it)
+        if RegExMatch(text, "A)[ `t`r`n]+", &m, pos)
+            pos += m.Len[0]
     }
 
     static _Value(text, &pos) {

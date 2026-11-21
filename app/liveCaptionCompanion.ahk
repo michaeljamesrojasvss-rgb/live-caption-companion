@@ -61,6 +61,8 @@ history := ""              ; Map: the whole call-history document
 currentCall := ""          ; Map: the session being recorded
 historyAvailable := true
 historyLoadError := ""     ; why the history file could not be loaded (shown in dialogs)
+histJsonCache := Map()     ; finished call (object) -> its JSON text, used by fast saves (SaveHistory)
+histCacheTick := 0         ; when that cache was last emptied (every full save empties it, and so does a 2 minute timeout)
 historyGui := ""
 chatView := true
 fontSize := 10
@@ -396,7 +398,7 @@ ReadCaption() {
     changeCount += 1
     ProcessSnapshot(lines)
     RenderTranscript()
-    PersistCurrentCall()
+    PersistCurrentCall(true)                 ; fast: only this call is serialized again (see SaveHistory)
     lastCaption := caption
     RefreshDebug()
 }
@@ -843,6 +845,7 @@ ValidateHistory(doc) {
 
 LoadHistory() {
     global history, historyAvailable, historyLoadError
+    t0 := A_TickCount
 
     if !FileExist(HISTORY_PATH) {
         history := NewHistoryDoc()
@@ -858,6 +861,7 @@ LoadHistory() {
         if !historyAvailable
             return
     }
+    readMs := A_TickCount - t0
 
     recovered := false
     if (HistoryStripPrompts(history) > 0) {
@@ -882,6 +886,16 @@ LoadHistory() {
     if recovered
         SaveHistory()
     KeepGoodCopy()
+    LogLoadTiming(readMs, A_TickCount - t0)
+}
+
+; One line per start in data\load-timing.log: how long the history took to load (to see if it got slower).
+LogLoadTiming(readMs, totalMs) {
+    try {
+        kb := FileExist(HISTORY_PATH) ? Round(FileGetSize(HISTORY_PATH) / 1024) : 0
+        FileAppend(FormatTime(, "yyyy-MM-dd HH:mm:ss") "  history: " history["sessions"].Length " calls, " kb " KB, read+parse "
+            readMs " ms, total " totalMs " ms`n", DATA_DIR "\load-timing.log", "UTF-8")
+    }
 }
 
 ; Removes the saved text of prepared prompts (the "prompt" field) from every call, keeping
@@ -955,6 +969,9 @@ KeepGoodCopy() {
         if (!FileExist(HISTORY_PATH) || FileGetSize(HISTORY_PATH) < 10)
             return
         good := HISTORY_DIR "\call-history.good.json"
+        ; unchanged since the last good copy (same size and time): rotating would only copy the same file twice
+        if (FileExist(good) && FileGetSize(good) = FileGetSize(HISTORY_PATH) && FileGetTime(good) = FileGetTime(HISTORY_PATH))
+            return
         if FileExist(good)
             FileCopy(good, HISTORY_DIR "\call-history.good-prev.json", true)
         FileCopy(HISTORY_PATH, good, true)
@@ -983,11 +1000,31 @@ WriteFileDurably(tmp, path, text) {
     }
 }
 
-SaveHistory() {
+; fast = true is only for saves where nothing but the live call changed (every caption change). Calls that
+; are finished and not being reviewed are then written from their cached text instead of being serialized
+; again - with 100+ calls that was the slow part. Every other save is a full one, and a full save (or 2
+; minutes) empties the cache, so an edit to an old call can't be missed for long.
+SaveHistory(fast := false) {
+    global histCacheTick
     if (!historyAvailable)
         return
     try {
-        jsonText := Json.Stringify(history)
+        if (fast && !IsObject(reviewCall) && A_TickCount - histCacheTick < 120000) {
+            for s in history["sessions"] {
+                if (!(s == currentCall) && !histJsonCache.Has(s))
+                    histJsonCache[s] := Json.Stringify(s, "    ")      ; the indent a call has inside the document
+            }
+            Json.Cache := histJsonCache
+        } else {
+            histJsonCache.Clear()
+            histCacheTick := A_TickCount
+            Json.Cache := ""
+        }
+        try {
+            jsonText := Json.Stringify(history)
+        } finally {
+            Json.Cache := ""
+        }
         DirCreate(HISTORY_DIR)
         WriteFileDurably(HISTORY_DIR "\.call-history." A_TickCount ".tmp", HISTORY_PATH, jsonText)
     } catch as err {
@@ -1009,10 +1046,11 @@ StartNewCallRecord() {
     currentCall := s
     history["sessions"].Push(s)
     SeedCaptionBaseline(lastCaption)
-    PersistCurrentCall()
+    ; Nothing to save yet: an empty call is dropped anyway when the history is loaded next time, and the first
+    ; caption saves it. (Saving here rewrote the whole history file at every start and every New call.)
 }
 
-PersistCurrentCall() {
+PersistCurrentCall(fast := false) {
     if !IsObject(currentCall)
         return
     tl := []
@@ -1022,7 +1060,7 @@ PersistCurrentCall() {
     }
     currentCall["transcriptLines"] := tl
     currentCall["chatBubbles"] := BubbleTexts()
-    SaveHistory()
+    SaveHistory(fast)
 }
 
 FinishCurrentCall() {

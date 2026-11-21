@@ -1,0 +1,176 @@
+{
+  "group": "browser",
+  "about": "The agent's own browser tab: a page in the Copilot pool's browser (same sign-in), shown as its own window. See docs\\AGENT.md.",
+  "tools": [
+    {
+      "name": "browser_open",
+      "title": "Open your browser tab",
+      "description": "Opens (or brings up) your own browser tab in a window on my screen, optionally going to an address. It shares my work sign-in, so work sites may open signed in. Returns a snapshot of the page (see browser_snapshot). https only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "url": { "type": "string", "description": "Optional address, e.g. https://www.bing.com" } }
+      },
+      "approval": "auto",
+      "handler": "BrowserOpen"
+    },
+    {
+      "name": "browser_navigate",
+      "title": "Go to an address",
+      "description": "Loads an address in your browser tab and returns a snapshot of the page. https only.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "url": { "type": "string", "description": "The address" } },
+        "required": ["url"]
+      },
+      "approval": "auto",
+      "handler": "BrowserNavigate"
+    },
+    {
+      "name": "browser_snapshot",
+      "title": "Read the page",
+      "description": "Reads your browser tab: title, address, how far it is scrolled, a numbered list of the things you can use ([ref] kind \"label\", with values, checked/disabled/off-screen) and the page's text. Use the ref numbers with the other browser tools. Refs change whenever you take a new snapshot or an action returns one: always use the latest.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "textChars": { "type": "integer", "description": "How much page text to include (default 4000, 0 = only the list)" } }
+      },
+      "approval": "auto",
+      "handler": "BrowserSnapshot"
+    },
+    {
+      "name": "browser_screenshot",
+      "title": "Look at the page",
+      "description": "A screenshot of the visible part of your browser tab, attached as an image. 1 image pixel = 1 page pixel, so you can click x/y read off it (useful for things the snapshot doesn't list, e.g. inside frames or canvases).",
+      "inputSchema": { "type": "object", "properties": {} },
+      "approval": "auto",
+      "handler": "BrowserScreenshot"
+    },
+    {
+      "name": "browser_click",
+      "title": "Click on the page",
+      "description": "Clicks an element of your browser tab (ref from the latest snapshot), or a point x/y (page pixels, from a screenshot). button: left (default), right (opens the page's right-click menu if it has one) or middle; double: true for a double-click. Returns a new snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ref": { "type": "integer", "description": "The element's ref number" },
+          "x": { "type": "number", "description": "Or: x in page pixels" },
+          "y": { "type": "number", "description": "and y" },
+          "button": { "type": "string", "enum": ["left", "right", "middle"] },
+          "double": { "type": "boolean", "description": "Double-click" }
+        }
+      },
+      "approval": "ask",
+      "handler": "BrowserClick"
+    },
+    {
+      "name": "browser_drag",
+      "title": "Drag on the page",
+      "description": "Presses the left mouse button on one thing and drags it to another, then lets go: move cards or rows, slide a slider, select text, pan a map, draw. Start: from (ref) or fromX/fromY; end: to (ref) or toX/toY (page pixels, e.g. read off a screenshot). Returns a new snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "from": { "type": "integer", "description": "Ref of what to drag" },
+          "fromX": { "type": "number" },
+          "fromY": { "type": "number" },
+          "to": { "type": "integer", "description": "Ref of where to drop it" },
+          "toX": { "type": "number" },
+          "toY": { "type": "number" }
+        }
+      },
+      "approval": "ask",
+      "handler": "BrowserDrag"
+    },
+    {
+      "name": "browser_hover",
+      "title": "Point the mouse at something",
+      "description": "Moves the mouse over an element (ref) or point (x/y) without clicking - for menus that open on hover or tooltips. Returns a new snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ref": { "type": "integer" },
+          "x": { "type": "number" },
+          "y": { "type": "number" }
+        }
+      },
+      "approval": "auto",
+      "handler": "BrowserHover"
+    },
+    {
+      "name": "browser_type",
+      "title": "Type on the page",
+      "description": "Clicks into a field (ref, optional: without it types where the cursor is), replaces what's in it (clear: false to add to it instead) with text, and presses Enter if submit is true. Returns a new snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ref": { "type": "integer", "description": "The field's ref number" },
+          "text": { "type": "string", "description": "What to type" },
+          "clear": { "type": "boolean", "description": "Replace what's there (default true)" },
+          "submit": { "type": "boolean", "description": "Press Enter after typing" }
+        },
+        "required": ["text"]
+      },
+      "approval": "ask",
+      "handler": "BrowserType"
+    },
+    {
+      "name": "browser_key",
+      "title": "Press a key",
+      "description": "Presses a key or shortcut in your browser tab: Enter, Tab, Shift+Tab, Escape, Backspace, Delete, Space, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, F5, a letter, or Ctrl+<letter>. Returns a new snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "key": { "type": "string", "description": "e.g. Enter, Escape, ArrowDown, Ctrl+A" } },
+        "required": ["key"]
+      },
+      "approval": "ask",
+      "handler": "BrowserKey"
+    },
+    {
+      "name": "browser_select",
+      "title": "Pick from a dropdown",
+      "description": "Picks an option (its text or value) in a dropdown list (a 'select' in the snapshot). For custom dropdowns that aren't 'select', click them instead. Returns a new snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "ref": { "type": "integer" },
+          "option": { "type": "string", "description": "The option's text (or value)" }
+        },
+        "required": ["ref", "option"]
+      },
+      "approval": "ask",
+      "handler": "BrowserSelect"
+    },
+    {
+      "name": "browser_scroll",
+      "title": "Scroll the page",
+      "description": "Scrolls your browser tab (or the scrollable box under ref) down, up, left or right by amount pixels (default 600). Returns a new snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "direction": { "type": "string", "enum": ["down", "up", "left", "right"] },
+          "amount": { "type": "integer" },
+          "ref": { "type": "integer", "description": "Optional: scroll inside this element" }
+        }
+      },
+      "approval": "auto",
+      "handler": "BrowserScroll"
+    },
+    {
+      "name": "browser_back",
+      "title": "Go back",
+      "description": "Goes back to the previous page in your browser tab (direction: forward to go forward again). Returns a new snapshot.",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "direction": { "type": "string", "enum": ["back", "forward"] } }
+      },
+      "approval": "auto",
+      "handler": "BrowserBack"
+    },
+    {
+      "name": "browser_close",
+      "title": "Close your browser tab",
+      "description": "Closes your browser tab's window.",
+      "inputSchema": { "type": "object", "properties": {} },
+      "approval": "auto",
+      "handler": "BrowserClose"
+    }
+  ]
+}

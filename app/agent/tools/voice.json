@@ -1,0 +1,32 @@
+{
+  "group": "voice",
+  "about": "Talk with me: the PC speaks your text (Windows voice) and listens to my answer (Windows speech recognition, English, on this PC only). See docs\\AGENT.md.",
+  "tools": [
+    {
+      "name": "speak",
+      "title": "Say something out loud",
+      "description": "Speaks the text out loud to me through the PC's speakers and returns when it has finished. Keep it short and natural, written the way you would say it (no lists, no markdown, no links).",
+      "inputSchema": {
+        "type": "object",
+        "properties": { "text": { "type": "string", "description": "What to say" } },
+        "required": ["text"]
+      },
+      "approval": "auto",
+      "handler": "Speak"
+    },
+    {
+      "name": "listen",
+      "title": "Listen to my answer",
+      "description": "Optionally says the question out loud first, then listens on my microphone and returns what I said as text (English speech recognition - expect small mistakes, ask again if it makes no sense). I may type my answer instead (then it is exact). It stops when I stop talking, press Done, or after maxSeconds (default 30, at most 120). Returns empty text if I said nothing.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "question": { "type": "string", "description": "Optional: what to say out loud before listening" },
+          "maxSeconds": { "type": "integer", "description": "Most seconds to listen (default 30)" }
+        }
+      },
+      "approval": "ask",
+      "handler": "Listen"
+    }
+  ]
+}

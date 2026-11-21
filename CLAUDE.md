@@ -69,7 +69,9 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   the AI are templates in `app\agent\instructions.md` (`.md`, not `.txt`: releases drop .txt files). Its OWN
   app and process, generic. **OFF by default** for workmates (tray > Agent > On, `live-captions.ini` [Agent]
   Enabled; ON by default in dev mode); Companion side `app\agent-link.ahk` (`AgtLink*`). Logs never hold the task, replies or results. Screen capture: `app\screen-grab.ahk`
-  (`Grab*`). Design + increments (own browser, real MCP servers, Salesforce/PC later): `docs\AGENT.md`.
+  (`Grab*`). Voice tools: `agent-voice.ahk` (+ `agent\listen.ps1`). Browser tools: `agent-browser.ahk` drives a
+  browser TAB in the pool (`copilot-pool-browser.ahk`, `PoolTab*`, pool message `tab`): its own window, the
+  pool's sign-in, never one of the Copilot pages. Design + increments (own browser, real MCP servers, Salesforce/PC later): `docs\AGENT.md`.
 - `app\same-value.ahk` (`Sv*`) - Same value highlighter: hold CapsLock (a tap stays CapsLock) -> every monitor
   captured + Windows OCR -> a see-through, click-through layered window per monitor marks ID-like values:
   same colour + number = equal, red dashed = almost the same (one edit apart), faint = no twin. Pieces:

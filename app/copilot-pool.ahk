@@ -8,6 +8,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include debug-trace.ahk
 #Include webview-guard.ahk
 #Include *i %A_ScriptDir%\lib\WebView2\WebView2.ahk
+#Include copilot-pool-browser.ahk
 ; ==============================================================================
 ; copilot-pool.ahk  -  Copilot pool: hidden Copilot pages that answer requests
 ;
@@ -59,6 +60,8 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 ;                 Read when the request arrives: the app may delete the files once it has "done".
 ;                 Sites without "images" in their chat-sites file refuse them (unsent).)
 ;                {t:"cancel", id}   {t:"end", conversation}   {t:"status", hwnd}
+;                {t:"tab", id, hwnd, owner, tab, op, args} -> {t:"tab-done", id, ok, text, image, error}: a normal
+;                  browser tab an app drives (the Agent) - see copilot-pool-browser.ahk
 ;                {t:"reserve", conversation, hwnd}: that conversation gets its OWN page, always loaded and
 ;                  warm, never lent out (Screen ask). Closing its window / "end" = only a fresh chat. Not kept
 ;                  across pool restarts: the app sends it again now and then (it also subscribes to "state").
@@ -1500,6 +1503,8 @@ PoolHandle(text) {
             PoolAsk(PoolNewRequest(m, IsInteger(hwnd) ? hwnd : 0))
         case "cancel":
             PoolCancel(m.Get("id", ""))
+        case "tab":                                  ; a browser tab an app drives (copilot-pool-browser.ahk)
+            PoolTabHandle(m, IsInteger(hwnd) ? hwnd : 0)
         case "end":
             PoolEndConversation(m.Get("conversation", ""))
         case "reserve":                              ; {conversation}: keep a page of its own, always ready
@@ -1911,6 +1916,8 @@ PoolOwnerCheck() {
     for v in views
         if (!v.dead && v.held)
             used := true                         ; one of its Copilot windows is open: you're using it
+    if poolTabs.Count
+        used := true                             ; an app's browser tab is open
     for hwnd in subs.Clone() {
         if WinExist("ahk_id " hwnd)
             used := true
@@ -1928,6 +1935,7 @@ PoolOwnerCheck() {
 }
 
 PoolOnExit(*) {
+    try PoolTabCloseAll()
     for id, r in reqs.Clone()
         PoolFinish(r, false, r.sent || IsObject(r.view) ? "failed" : "unsent", "the Copilot pool closed")
     for v in views

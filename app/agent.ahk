@@ -8,6 +8,8 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include screen-grab.ahk
 #Include agent-protocol.ahk
 #Include agent-tools.ahk
+#Include agent-voice.ahk
+#Include agent-browser.ahk
 ; ==============================================================================
 ; agent.ahk  -  the Agent: a chat AI (through the Copilot pool) that can use tools, with your OK
 ;
@@ -168,6 +170,8 @@ AgtBuildGui() {
     g.Add("Button", "x10 y102 w100 h30 vRun Default", "▶ Run").OnEvent("Click", (*) => AgtRunStart())
     g.Add("Button", "x120 y102 w90 h30 vStop Disabled", "■ Stop").OnEvent("Click", (*) => AgtStop())
     g.Add("Button", "x220 y102 w110 h30 vNew", "New task").OnEvent("Click", (*) => AgtNewTask())
+    ; DANGEROUS: every tool runs without asking. Off at every start (never saved), confirmed when turned on.
+    g.Add("CheckBox", "x345 y108 w260 h22 vAllowAll", "Allow everything (dangerous)").OnEvent("Click", AgtAllowAllClicked)
     g.Add("Text", "x10 y140 w600 h20 vStatus", "")
     g.SetFont("s10 bold")
     g.Add("Text", "x10 y166 w600 h40 vAsk Disabled", "No action is waiting for your OK.")
@@ -188,6 +192,27 @@ AgtBuildGui() {
     HotIfWinActive("ahk_id " g.Hwnd)
     Hotkey("^Enter", (*) => AgtRunStart())
     HotIf()
+    AgtRefresh()
+}
+
+AgtAllowAll() => IsObject(agtGui) && agtGui["AllowAll"].Value = 1
+
+AgtAllowAllClicked(ctl, *) {
+    if ctl.Value {
+        if (MsgBox("Allow everything?`n`nThe agent will click, type, use the microphone, take screenshots and run "
+            . "every other tool WITHOUT asking you first - on real pages that are signed in as you.`n`n"
+            . "It turns off again when the agent restarts.", "Agent - dangerous", "YesNo Icon! Default2 Owner" agtGui.Hwnd) != "Yes") {
+            ctl.Value := 0
+            return
+        }
+        ctl.SetFont("cRed bold")
+        AgtLog("allow everything turned ON")
+        if (AgtActive() && agtRun.status = "approval")   ; something already waiting: allow it now
+            AgtApprove("once")
+    } else {
+        ctl.SetFont("cDefault norm")
+        AgtLog("allow everything turned off")
+    }
     AgtRefresh()
 }
 
@@ -415,7 +440,7 @@ AgtRunStart() {
     agtSeq += 1
     agtRun := {id: "a" A_TickCount "-" agtSeq, goal: goal, status: "thinking", step: 0, badFormat: 0,
         startedAt: A_TickCount, endedAt: 0, endWhy: "", out: 0, pending: 0, allow: Map(), files: [], note: "",
-        sawWindow: false}
+        sawWindow: false, history: [], restarts: 0, lastBad: ""}
     agtEntries := []
     agtGui["Steps"].Delete()
     AgtEntry("You", goal)
@@ -520,6 +545,18 @@ AgtOnAnswer(text) {
     r := agtRun
     p := AgtProtoParse(text)
     if (p.kind = "none") {
+        refused := AgtIsRefusal(text) || (r.lastBad != "" && Trim(text) = r.lastBad)
+        if (refused && r.restarts < 2) {
+            AgtRecover(text)
+            return
+        }
+        ; plain sentences again after one reminder: take them as the AI's final answer
+        if (!InStr(text, "{") && r.badFormat >= 1 && Trim(text) != "" && !refused) {
+            AgtEntry("AI", "Finished (plain text): " Trim(text), text)
+            AgtEnd("done", "")
+            return
+        }
+        r.lastBad := Trim(text)
         AgtEntry("AI", "(reply not in the agent's format)", text)
         r.badFormat += 1
         if (r.badFormat > AgtNum("MaxFormatRetries")) {
@@ -529,7 +566,7 @@ AgtOnAnswer(text) {
         AgtAsk(AgtProtoFill(agtTemplates, "format-error", Map("error", p.error)), [], false, "Please use the format")
         return
     }
-    r.badFormat := 0
+    r.badFormat := 0, r.lastBad := ""
     if (p.count > 1)
         r.note := AgtProtoFill(agtTemplates, "several", Map("count", p.count))
     if (p.kind = "final") {
@@ -557,7 +594,9 @@ AgtOnAnswer(text) {
         AgtToolError(call, err)
         return
     }
-    if (tool.approval = "ask" && !r.allow.Has(tool.name))
+    if (tool.approval = "ask" && !r.allow.Has(tool.name) && AgtAllowAll())
+        AgtEntry("You", "Allowed " tool.name " (Allow everything is on)")
+    if (tool.approval = "ask" && !r.allow.Has(tool.name) && !AgtAllowAll())
         AgtAskApproval(call, tool)
     else
         AgtRunTool(call)
@@ -624,12 +663,50 @@ AgtRunTool(call) {
         . (StrLen(cut) < StrLen(text) ? " (cut to " StrLen(cut) " chars)" : ""), cut)
     AgtLog("task " r.id ": " call.name " ran in " ms " ms (" StrLen(text) " chars, " imgs.Length " image(s))")
     DbgTrace("agent", "task " r.id " tool " call.name " ran in " ms " ms: " StrLen(text) " chars, " imgs.Length " image(s)")
+    AgtRemember(call, text)
     imgNote := imgs.Length ? " " imgs.Length " image(s) attached." : ""
     AgtAsk(AgtProtoFill(agtTemplates, "result", Map("tool", call.name, "step", call.step, "maxSteps", AgtNum("MaxSteps"),
         "result", cut, "images", imgNote)), imgs, false, "Result of " call.name)
 }
 
+; A short line per tool call, for a fresh chat after Copilot refuses (AgtRecover)
+AgtRemember(call, result) {
+    one := Trim(RegExReplace(result, "\s+", " "))
+    agtRun.history.Push("step " call.step ": " call.name " " AgtProtoJson(call.args) " -> "
+        . (StrLen(one) > 300 ? SubStr(one, 1, 300) "..." : one))
+}
+
+; Copilot's safety filter refused (it then keeps refusing in that chat): a fresh chat with the task and
+; a short summary of the steps so far, without the full text of the result it refused
+AgtRecover(text) {
+    r := agtRun
+    r.restarts += 1
+    r.badFormat := 0, r.lastBad := ""
+    AgtEntry("Agent", "Copilot refused (its safety filter). Starting a fresh chat with a summary (" r.restarts " of 2).", text)
+    AgtLog("task " r.id ": refused - fresh chat " r.restarts)
+    steps := ""
+    for h in r.history
+        steps .= h "`n"
+    try {
+        prompt := AgtProtoFill(agtTemplates, "start", Map("tools", AgtProtoToolList(agtTools, AgtToolVars()),
+            "goal", r.goal, "maxSteps", AgtNum("MaxSteps"), "today", FormatTime(, "dddd d MMMM yyyy")))
+            . "`n`n" AgtProtoFill(agtTemplates, "resume", Map("steps", steps = "" ? "(none yet)" : RTrim(steps, "`n")))
+    } catch as err {
+        AgtEnd("failed", err.Message)
+        return
+    }
+    AgtAsk(prompt, [], true, "Fresh chat + summary")
+}
+
+; Copilot's canned refusals (no JSON, short, apologetic)
+AgtIsRefusal(text) {
+    t := Trim(text)
+    return !InStr(t, "{") && StrLen(t) < 400
+        && RegExMatch(t, "i)(sorry|can.t (help|assist|respond|continue|chat|do that)|unable to (help|assist)|not able to help|different topic|new chat|try another)")
+}
+
 AgtToolError(call, err) {
+    AgtRemember(call, "FAILED: " err)
     AgtEntry("Tool", call.name " couldn't run: " err, err)
     AgtAsk(AgtProtoFill(agtTemplates, "tool-error", Map("tool", call.name, "step", call.step,
         "maxSteps", AgtNum("MaxSteps"), "error", err)), [], false, "Error from " call.name)
@@ -735,6 +812,10 @@ AgtHandle(tag, text) {
                 case "show": AgtShow()
                 case "quit": ExitApp()
             }
+            return
+        }
+        if (t = "tab-done") {                    ; a browser-tab step finished (agent-browser.ahk waits for it)
+            agtTabReplies[m.Get("id", "")] := m
             return
         }
         if (t = "state") {

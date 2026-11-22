@@ -116,6 +116,7 @@ POOL_DEFAULTS := Map(
     "AllowPersonal", 0,
     "ImageMaxMB", 20,              ; biggest image file a request may attach
     ; Memory guard (PoolMemAudit): the pool's whole browser engine is measured every MemAuditSec.
+    "MemGuard", 1,                 ; 0 = the guard below does nothing: no low-memory level, no reloads, no closing (it only measures)
     "MemAuditSec", 30,
     "IdleLowMemSec", 60,           ; a hidden page idle this long is told to use little memory (WebView2 "low" level)
     "PageMaxMB", 400,              ; a page's own script memory over this (idle, not your window) = it's reloaded fresh
@@ -1857,22 +1858,23 @@ PoolMemAudit() {
         return
     now := A_TickCount
     try {
+        guard := (PoolNum("MemGuard") != 0)          ; off (Settings > Copilot): measure only, never touch a page
         total := WvgEnvMB(env)
         poolMemMB := total
         for v in views {
             if v.dead
                 continue
-            idle := !v.held && v.jobId = "" && !v.reserved && now - v.lastUse > PoolNum("IdleLowMemSec") * 1000   ; an app's own reserved page stays warm (Screen ask: a low-memory page was slow to wake)
+            idle := guard && !v.held && v.jobId = "" && !v.reserved && now - v.lastUse > PoolNum("IdleLowMemSec") * 1000   ; an app's own reserved page stays warm (Screen ask: a low-memory page was slow to wake)
             PoolMemLevel(v, idle ? 1 : 0)
             try v.wv.PostWebMessageAsString('{"t":"mem"}')       ; the page answers with its size (next audit uses it)
         }
         ; one page grown too big (a long chat, a leaking site): a fresh copy of it, if nobody is using it
         for v in views {
-            if (v.dead || v.held || v.jobId != "" || !v.HasOwnProp("heapMB") || v.heapMB <= PoolNum("PageMaxMB"))
+            if (!guard || v.dead || v.held || v.jobId != "" || !v.HasOwnProp("heapMB") || v.heapMB <= PoolNum("PageMaxMB"))
                 continue
             PoolMemReload(v, "its page uses " v.heapMB " MB (limit " PoolNum("PageMaxMB") ")")
         }
-        over := total > PoolNum("TotalMaxMB")
+        over := guard && total > PoolNum("TotalMaxMB")
         if over {
             big := 0
             for v in views
@@ -1889,7 +1891,7 @@ PoolMemAudit() {
                 }
         }
         DbgTrace("pool", "memory " total " MB in " WvgEnvPids(env).Length " processes, " PoolRegularCount() " page(s)"
-            (over ? " - OVER " PoolNum("TotalMaxMB") " MB" : ""))
+            (over ? " - OVER " PoolNum("TotalMaxMB") " MB" : "") (guard ? "" : " (memory guard is off)"))
         if (over || Abs(total - lastLogged) >= 150) {
             lastLogged := total
             PoolLog("memory: " total " MB (" PoolRegularCount() " pages)" (over ? " - over the limit, trimmed" : ""))

@@ -38,6 +38,10 @@ poolLinkHelperSeen := Map()    ; helper id -> {text, notes, call}: the live call
 POOLLINK_RESTART := "Restart the Copilot pool"
 POOLLINK_SIGNOUT := "Sign out of Copilot and restart the pool"
 POOLLINK_MEMORY := "Built-in browser memory (Copilot pool, Screen ask)..."
+; The pool's memory guard settings (data\copilot-pool.ini [Settings]); the pool reads them again at every check,
+; so a change applies within 30 s, no restart. Defaults = the pool's own (POOL_DEFAULTS).
+POOLLINK_INI := DATA_DIR "\copilot-pool.ini"
+POOLLINK_MEM_DEFAULTS := Map("MemGuard", 1, "IdleLowMemSec", 60, "PageMaxMB", 400, "TotalMaxMB", 1500)
 
 PoolLinkInit() {
     try {
@@ -603,6 +607,23 @@ PoolLinkSweep() {
     } catch as err {
         PoolLinkReport(err)
     }
+}
+
+PoolLinkMemGet(key) {
+    def := POOLLINK_MEM_DEFAULTS[key]
+    try return Integer(IniRead(POOLLINK_INI, "Settings", key, def))
+    return def
+}
+
+PoolLinkMemSet(key, value) {
+    IniWrite(Integer(value), POOLLINK_INI, "Settings", key)
+}
+
+; Memory guard on/off (Settings > Copilot). Off = the pool never reloads, shrinks or closes pages to save memory.
+PoolLinkMemGuardToggle() {
+    on := PoolLinkMemGet("MemGuard") = 0
+    PoolLinkMemSet("MemGuard", on ? 1 : 0)
+    try statusText.Text := "Status: Copilot memory guard " (on ? "on" : "off - pages are never reloaded to save memory")
 }
 
 ; Tray > Copilot assist > Built-in browser memory: who uses how much, and a way to end leftovers

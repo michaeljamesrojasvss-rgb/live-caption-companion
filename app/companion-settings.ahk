@@ -97,6 +97,16 @@ CSetFields() {
             , "Sign in to Copilot, see whether the pool is ready, pick the chat site"]
         , ["Restart the pool", PoolLinkRestart, "Close the pool and start it again. Its Copilot windows close; you stay signed in."]
         , ["Sign out of Copilot...", PoolLinkSignOut, "Sign out (e.g. to use another account) and start the pool again"]]})
+    f.Push({sec: 2, type: "head", label: "Copilot pool memory guard"})
+    f.Push({sec: 2, type: "check", key: "Pool.MemGuard", label: "Memory guard: tidy idle Copilot pages", def: 1
+        , tip: "On: idle pages use less memory, and a page that grew too big is reloaded when nobody is using it.`nOff: pages are never touched (more memory used, but nothing reloads - try it if Screen ask or 💬 is slow to start).`nApplies within 30 seconds."
+        , get: () => PoolLinkMemGet("MemGuard") != 0, flip: PoolLinkMemGuardToggle})
+    f.Push(CSetPoolNum("PageMaxMB", "A page bigger than this is reloaded when idle (MB)", "100 to 4000", 100, 4000
+        , "A reload makes the next question wait while Copilot loads again. Higher = fewer reloads, more memory."))
+    f.Push(CSetPoolNum("TotalMaxMB", "All Copilot pages together over this: trim (MB)", "300 to 8000", 300, 8000
+        , "When the whole built-in browser uses more than this, the biggest idle page is reloaded and spare pages are closed"))
+    f.Push(CSetPoolNum("IdleLowMemSec", "Idle pages use less memory after (seconds)", "10 to 3600", 10, 3600
+        , "A hidden page nobody used for this long is told to free memory; it wakes up when it gets a question"))
     f.Push({sec: 2, type: "head", label: "Auto helpers"})
     f.Push({sec: 2, type: "note", label: "To pick which helpers follow the call by themselves: right-click a helper button > Auto-run during calls."})
     f.Push(CSetAutoNum("MinChars", "New customer letters before a follow-up", "1 = any new words", 1, 5000
@@ -212,6 +222,11 @@ CSetQaNum(key, tip) {
     c := QA_CHOICES[key]
     return {sec: 1, type: "num", key: "QA." key, label: c[1] (c[3] != "" ? " (" c[3] ")" : ""), hint: c[5] " to " c[6]
         , tip: tip, min: c[5], max: c[6], def: c[4], get: () => QAInt(key), set: (v) => QASaveValue(key, Integer(v))}
+}
+
+CSetPoolNum(key, label, hint, lo, hi, tip) {
+    return {sec: 2, type: "num", key: "Pool." key, label: label, hint: hint, tip: tip, min: lo, max: hi, def: POOLLINK_MEM_DEFAULTS[key]
+        , get: () => PoolLinkMemGet(key), set: (v) => PoolLinkMemSet(key, v)}
 }
 
 CSetAutoNum(key, label, hint, lo, hi, tip) {

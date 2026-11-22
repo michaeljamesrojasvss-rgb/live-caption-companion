@@ -181,6 +181,8 @@ with the Windows account.)
 | `AllowedHosts` | `m365.cloud.microsoft, copilot.cloud.microsoft` | The worker only runs on these. |
 | `PersonalDomains` | gmail.com, outlook.com, ... | Email domains counted as personal. |
 | `AllowPersonal` | `0` | Testing switch (pool window checkbox). |
+| `MemGuard` | `1` | `0` = the memory guard only measures: no low-memory level, no reloads, no closed pages (Companion Settings > Copilot > Copilot pool memory guard). Try it when a question is slow to start. |
+| `IdleLowMemSec` / `PageMaxMB` / `TotalMaxMB` | `60` / `400` / `1500` | Memory guard limits (also in Companion Settings > Copilot). A reload (page over `PageMaxMB`, or the engine over `TotalMaxMB`) makes the next question wait for Copilot to load. Each reload is logged in `data\copilot-pool.log` as "reloaded to free memory". |
 | `ChatW` / `ChatH` | `900` / `760` | Size of a 💬 window (remembered when you close one). |
 
 **Page selectors:** defaults in the worker script; an optional `data\copilot-pool-selectors.json`

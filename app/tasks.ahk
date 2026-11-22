@@ -32,7 +32,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 ; * Your data: data\tasks.json, data\task-templates.json, data\tasks.ini
 ;   (settings, window, sizes), data\tasks.log (problems).
 ; * One copy only: starting it again hands over to the running one.
-;   Arguments: /background, /linked (open on "Linked to current"), /restart.
+;   Arguments: /background, /linked (open on "Linked to current"), /settings (its settings window), /restart.
 ;
 ; Messages (WM_COPYDATA, tag TASK_TAG, text split by TAB):
 ;   app -> Tasks   ctx  appHwnd  appName  itemId  itemLabel  note  busy(0/1)
@@ -40,7 +40,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 ;                            add the settings' checklist for it, maybe show Tasks)
 ;                  dropitem  appHwnd  appName  itemId   (thrown away: remove its
 ;                            automatic checklist if untouched)
-;                  show | showlinked | togglelinked | hide | quit
+;                  show | showlinked | togglelinked | hide | settings | quit
 ;   Tasks -> app   open  itemId          (show that item, e.g. review the call)
 ;                  itemstatus  itemId  open  total   (tasks still open for its
 ;                            open item; sent when it changes)
@@ -98,7 +98,7 @@ if (taskArg = "/restart") {
 ; Only one copy: hand the request to the one that is running and leave
 if (other := WinExist(TASK_WIN_TITLE " ahk_class AutoHotkeyGUI")) {
     if (taskArg != "/background" && taskArg != "/restart")
-        TaskSendTo(other, taskArg = "/linked" ? "showlinked" : "show")
+        TaskSendTo(other, taskArg = "/linked" ? "showlinked" : taskArg = "/settings" ? "settings" : "show")
     ExitApp()
 }
 
@@ -157,7 +157,9 @@ OnExit(TaskOnExit)
 TaskRebuildTree()
 TaskRefreshUpNext()
 SetTimer(TaskTick, 1000)
-if (taskArg != "/background" && taskArg != "/restart")
+if (taskArg = "/settings")
+    TaskOpenSettings()
+else if (taskArg != "/background" && taskArg != "/restart")
     TaskShowWindow(taskArg = "/linked" ? TASK_VIEW_LINKED : 0)
 TaskTick()                               ; timers that ran out while closed alert now
 Persistent()
@@ -2668,6 +2670,7 @@ TaskHandleMessage(text, *) {
         case "showlinked":   TaskShowWindow(TASK_VIEW_LINKED)
         case "togglelinked": TaskToggleLinked()
         case "hide":         TaskHide()
+        case "settings":     TaskOpenSettings()
         case "newitem":      TaskOnNewItem(p)
         case "dropitem":     TaskOnDropItem(p)
         case "quit":         ExitApp()

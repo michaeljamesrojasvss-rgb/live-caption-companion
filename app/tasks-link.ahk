@@ -103,6 +103,19 @@ TaskLinkOpen(*) {
     }
 }
 
+; Companion settings > Apps: "Open" (the Tasks window) and "Settings..." (Tasks' own settings window).
+; Both work while Tasks is off too: it starts just for that.
+TaskLinkShowApp(what := "show") {
+    try {
+        if (hwnd := TaskLinkWindow())
+            TaskLinkSend(hwnd, what)
+        else if TaskLinkStart(what = "settings" ? "/settings" : "")
+            statusText.Text := "Status: opening Tasks..."
+    } catch as err {
+        TaskLinkReport(err)
+    }
+}
+
 ; Sends the call on screen + busy when it changed (or force)
 TaskLinkPush(force := false) {
     global taskLinkLastCtx, taskLinkLastHwnd

@@ -77,12 +77,16 @@ now (see below).
   call, with context sent in advance at call start), then moving the extension's features
   (Outlook buttons, WO checker) into AHK and retiring the extension. See the same doc.
 
-### Companion UI overhaul (agreed, not started)
+### Companion UI overhaul (step 1 built 2026-11-22, being tested)
 
-- The Companion's tray menu and window are getting crowded. Plan: one **Settings window** (like
-  Tasks > ⚙) instead of the long tray menu, and a redesign of the main window.
-- Build the new UI next to the old one, behind a setting "Use the new UI", so coworkers can
-  switch back while it settles. Options to be discussed before building.
+- **Step 1 - Settings window (built):** ⚙ next to 📍 (and tray > Settings...) opens
+  `app\companion-settings.ahk`: sections on the left (Calls & 3CX, Copilot, Apps, Captions & mic,
+  Updates & help, Troubleshooting), Save / Close / Defaults. Decided with the owner: the tray menu
+  **stays as it is** (people used to it keep it), so settings live in two places and both use the
+  same toggle functions. The other apps keep their own settings windows; Apps only switches them
+  on/off and opens them. Restart/Test Live Captions is in both Settings and the chat right-click.
+- **Step 2 - main window redesign (later, to be discussed):** built next to the old one, behind a
+  setting "Use the new UI", so coworkers can switch back while it settles.
 
 
 Credit...

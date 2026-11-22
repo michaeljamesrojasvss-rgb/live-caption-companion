@@ -81,6 +81,12 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   Companion tray > Same value highlighter (`same-value-link.ahk`, `SvLink*`, [SameValue] Enabled; "Show now"
   while off starts it with `/once`). Settings window `same-value-settings.ahk` (`SvSet*`, built from one field
   list - a new setting = one entry + its default in `SV_DEFAULTS`), saved in `data\same-value.ini`. Design: `docs\SAME-VALUE.md`.
+- `app\companion-settings.ahk` (`CSet*`) - the Companion's **Settings window**: ⚙ next to 📍, and tray > Settings...
+  Sections on the left, built from one field list (`CSetFields`: a new setting = one entry; types at the top of the
+  file). The tray menu keeps all its items too (owner's choice), so both MUST use the same functions: a tick calls the
+  module's own toggle (`CallerToggle`, `PoolLinkToggle`, ...) so tray ticks follow; values use the module's setter.
+  Save applies only fields changed in the window (a tray change made meanwhile is kept). A new Companion setting goes
+  in both places: its module's tray item + one `CSetFields` entry. Other apps keep their own settings windows.
 - `app\webview-guard.ahk` (`Wvg*`) - **memory guard** for every built-in browser (WebView2), used by the Companion,
   the pool and Screen ask. Rule: a WebView2 app must never outlive its users or grow without limit. The pool
   closes itself when no app/window uses it (`NoAppQuitSec`) and the Companion quits it on exit; the pool audits

@@ -25,6 +25,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include webview-guard.ahk         ; keeps the built-in browsers (WebView2) in check
 #Include copilot-pool-link.ahk
 #Include auto-helpers.ahk
+#Include companion-settings.ahk     ; the Settings window (⚙ button, tray > Settings...)
 
 ; ==============================================================================
 ; State
@@ -178,7 +179,8 @@ myGui.BackColor := "11151D"
 myGui.SetFont("s10 cF1F5FB", "Segoe UI")
 pinned := false
 btnPin := myGui.Add("Button", "w30 h22", "📍")
-statusText := myGui.Add("Text", "x+8 w570 h20", "Status: starting...")
+btnSettings := myGui.Add("Button", "x+4 w30 h22", "⚙")   ; the Settings window (companion-settings.ahk)
+statusText := myGui.Add("Text", "x+8 w536 h20", "Status: starting...")
 myGui.Add("Text", "xm w640 c9BA8BA", "Current caption")
 current := myGui.Add("Edit", "w640 r4 ReadOnly +0x100 Background1B2431 cF1F5FB")
 btnChat    := myGui.Add("Button", "w90",      "Chat")
@@ -216,6 +218,7 @@ btnFontDec.OnEvent("Click", (*) => ChangeFontSize(-1))
 btnFontInc.OnEvent("Click", (*) => ChangeFontSize(1))
 btnPrev.OnEvent("Click", ReviewPrevious)
 btnPin.OnEvent("Click", TogglePin)
+btnSettings.OnEvent("Click", (*) => CSetShow())
 
 ; Right-click context menu on the chat/transcript view
 chatCtxMenu := Menu()
@@ -306,6 +309,7 @@ DbgInitCompanion()                 ; debug trace: tray items + logs every button
 PoolLinkInit()                     ; after AssistInit: adds to its tray menu
 AutoInit()                         ; auto helpers (after PoolLinkInit)
 TutInit()
+CSetInit()                         ; tray > Settings... (last: goes on top of the tray menu)
 
 ; Mic captions tray toggle (only shown if whisper-stream is available)
 if micAvailable {

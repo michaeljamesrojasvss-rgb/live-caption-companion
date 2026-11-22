@@ -4,6 +4,7 @@ try TraySetIcon(A_ScriptDir "\icons\tasks.ico")       ; its own icon (tray, wind
 try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionCompanion.Tasks")       ; own taskbar button
 #Include app-paths.ahk
 #Include Json.ahk
+#Include tooltips.ahk               ; hover tips on buttons (shared; data\tips.ini switches them)
 #Include tasks-alert.ahk
 
 ; ==============================================================================
@@ -626,12 +627,17 @@ TaskBuildGui() {
     tkBanner := tkGui.Add("Text", "x10 y42 w600 h26 +0x200 c9BA8BA", "")
     ; mouse-friendly buttons for everything the keyboard can do
     tkToolbar := []
-    for b in [["+ Task", TaskAddSibling, 70], ["+ Subtask", TaskAddChild, 84], ["◀ Out", TaskOutdent, 62]
-            , ["In ▶", TaskIndent, 56], ["▲", TaskMove.Bind(-1), 34], ["▼", TaskMove.Bind(1), 34]
-            , ["✓ Done", TaskToggleDoneSelected, 70], ["🗑", TaskDeleteSelected, 36]
-            , ["🔗 Links", (*) => TaskOpenLinks(TaskSelectedNode()), 76]] {
+    for b in [["+ Task", TaskAddSibling, 70, "New task below the selected one (Enter)"]
+            , ["+ Subtask", TaskAddChild, 84, "New task inside the selected one (Ctrl+Enter)"]
+            , ["◀ Out", TaskOutdent, 62, "Move the selected task one level out"]
+            , ["In ▶", TaskIndent, 56, "Move the selected task one level in (under the task above it)"]
+            , ["▲", TaskMove.Bind(-1), 34, "Move the selected task up"], ["▼", TaskMove.Bind(1), 34, "Move the selected task down"]
+            , ["✓ Done", TaskToggleDoneSelected, 70, "Tick the selected task done (or not done again)"]
+            , ["🗑", TaskDeleteSelected, 36, "Delete the selected task (Del)"]
+            , ["🔗 Links", (*) => TaskOpenLinks(TaskSelectedNode()), 76, "Open a link from the selected task's checklist or notes"]] {
         c := tkGui.Add("Button", "y74 h26 w" b[3] (A_Index = 1 ? " x10" : " x+4"), b[1])
         c.OnEvent("Click", TaskToolbarClick.Bind(b[2]))
+        TipSet(c, b[4])
         tkToolbar.Push(c)
     }
     tkTree := tkGui.Add("TreeView", "x10 y" TASK_TREE_TOP " w600 h300 Checked -ReadOnly Background1B2431 cF1F5FB")
@@ -648,6 +654,7 @@ TaskBuildGui() {
     Loop TASK_MAX_QUICK {
         b := tkGui.Add("Button", "w52 h26 Hidden", "")
         b.OnEvent("Click", TaskQuickTimer.Bind(A_Index))
+        TipSet(b, "Start a timer this long on the selected task (the lengths are in Settings)")
         tkTimerBtns.Push(b)
     }
     tkBtnCustom := tkGui.Add("Button", "w76 h26", "Custom…")
@@ -672,6 +679,16 @@ TaskBuildGui() {
     tkBtnCustom.OnEvent("Click", (*) => TaskCustomTimer(TaskSelectedNode()))
     tkBtnStop.OnEvent("Click", (*) => TaskStopTimer(TaskSelectedNode()))
     tkBtnPlan.OnEvent("Click", (*) => TaskPlanDialog(TaskSelectedNode()))
+    TipSetAll([
+        [tkShowDone, "Also show tasks that are ticked done"],
+        [tkBtnTpl, "Add a ready-made checklist (a template), or save the selected task as one"],
+        [tkBtnSettings, "Tasks settings: alerts, sounds, timer buttons, read aloud"],
+        [tkBtnHelp, "The keys and mouse actions in Tasks"],
+        [tkShowFinished, "Also list the timers that finished today"],
+        [tkSplitA, "Drag up or down to resize"], [tkSplitB, "Drag up or down to resize"],
+        [tkBtnCustom, "Start a timer of any length on the selected task"],
+        [tkBtnStop, "Stop the selected task's timer"],
+        [tkBtnPlan, "Plan a timer that starts later by itself (e.g. when the task above is ticked done)"]])
     tkGui.OnEvent("Size", TaskOnSize)
     tkGui.OnEvent("Close", (*) => TaskHide())
     TaskSetupTimerButtons()
@@ -1328,6 +1345,7 @@ TaskAskDialog(n) {
     save := g.Add("Button", "xm y+18 w90 Default", "Save")
     remove := g.Add("Button", "x+8 w110", "Remove")
     cancel := g.Add("Button", "x+8 w90", "Cancel")
+    TipSet(remove, "Take this question off the task (it won't be asked any more)")
     remove.Enabled := has
     save.OnEvent("Click", DoSave)
     remove.OnEvent("Click", DoRemove)
@@ -2176,6 +2194,7 @@ TaskHistoryWindow(n) {
     lv.ModifyCol(2, 330)
     copy := g.Add("Button", "xm y+8 w140", "Copy as text")
     close := g.Add("Button", "x+8 w90 Default", "Close")
+    TipSet(copy, "Copy this timer history to the clipboard")
     copy.OnEvent("Click", (*) => (A_Clipboard := text, TaskStatus("Timer history copied")))
     close.OnEvent("Click", (*) => g.Destroy())
     g.OnEvent("Escape", (*) => g.Destroy())
@@ -2850,6 +2869,9 @@ TaskOpenSettings() {
     testAlert := g.Add("Button", "x+8 w160", "Save && test alert")
     cancel := g.Add("Button", "x+8 w100", "Cancel")
 
+    TipSetAll([[browse, "Pick a .wav sound file"], [testSnd, "Play the alert sound now"]
+        , [testVoice, "Hear how tasks are read aloud with this voice and speed"]
+        , [save, "Save and close"], [testAlert, "Save, then show a sample alert"]])
     browse.OnEvent("Click", PickSound)
     testSnd.OnEvent("Click", (*) => TAlertPlaySound(Trim(file.Value) = "" ? "*48" : Trim(file.Value)))
     testVoice.OnEvent("Click", (*) => TaskSpeak("Hello, this is how tasks are read aloud.", voice.Value = 1 ? "" : voice.Text, rate.Value))

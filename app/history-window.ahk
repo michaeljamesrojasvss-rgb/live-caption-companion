@@ -45,6 +45,13 @@ ShowHistoryWindow(*) {
     btnDelete := hg.Add("Button", "x+10 w130", "Delete selected…")
     btnImport := hg.Add("Button", "x+10 w150", "Import && merge…")
     btnCloseHist := hg.Add("Button", "x+10 w80", "Close")
+    TipSetAll([
+        [btnCopyDetails, "Copy everything shown on the right (the selected call) to the clipboard"],
+        [btnViewMain, "Open the selected call in the main window (the live call keeps recording)"],
+        [btnSelAll, "Select every call in the list"],
+        [btnSelToday, "Select only today's calls"],
+        [btnDelete, "Delete the selected calls from your history (asks first)"],
+        [btnImport, "Bring in calls and helpers from another copy of the app or a backup. It shows what will change first; duplicates are skipped."]])
 
     state := {text: ""}
 

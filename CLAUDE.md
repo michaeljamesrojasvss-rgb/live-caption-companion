@@ -87,6 +87,13 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   module's own toggle (`CallerToggle`, `PoolLinkToggle`, ...) so tray ticks follow; values use the module's setter.
   Save applies only fields changed in the window (a tray change made meanwhile is kept). A new Companion setting goes
   in both places: its module's tray item + one `CSetFields` entry. Other apps keep their own settings windows.
+- `app\tooltips.ahk` (`Tip*`) - **hover tips**, shared by every app (include it after `app-paths.ahk`): `TipSet(ctl, text)`
+  ("" removes; call again to change, e.g. a state), `TipAdd(ctl, text)` returns ctl for one-liners
+  (`TipAdd(g.Add(...), "tip").OnEvent(...)` - keep it on ONE line, a line starting with `.OnEvent` is not chaining).
+  Windows' own tooltip control, no polling. One switch for all apps: `data\tips.ini` [Tips] On (Companion Settings >
+  Updates & help, and tray). **Rule: every new button gets a tip** (what it does, in plain words); skip only
+  self-explaining ones (Close, Cancel, OK, Next). Not on big text boxes (they'd pop up while typing). Helpers can carry
+  their own `tip` (Edit helpers > Tooltip), shown above the generic text. Screen ask's page uses HTML `title=`.
 - `app\webview-guard.ahk` (`Wvg*`) - **memory guard** for every built-in browser (WebView2), used by the Companion,
   the pool and Screen ask. Rule: a WebView2 app must never outlive its users or grow without limit. The pool
   closes itself when no app/window uses it (`NoAppQuitSec`) and the Companion quits it on exit; the pool audits

@@ -5,6 +5,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include app-paths.ahk           ; must stay first: sets DATA_DIR and APP_VERSION
 #Include error-log.ahk           ; right after: unhandled errors go to data\errors.log
 #Include debug-trace.ahk         ; shared timing trace (data\debug-trace.log)
+#Include tooltips.ahk            ; hover tips on buttons (shared by every app)
 #Include UIA.ahk
 #Include Json.ahk
 #Include salesforce.ahk
@@ -219,6 +220,19 @@ btnFontInc.OnEvent("Click", (*) => ChangeFontSize(1))
 btnPrev.OnEvent("Click", ReviewPrevious)
 btnPin.OnEvent("Click", TogglePin)
 btnSettings.OnEvent("Click", (*) => CSetShow())
+TipSetAll([
+    [btnSettings, "Settings: everything in one window (the tray menu has it too)"],
+    [btnChat, "Show the call as chat bubbles (right-click a bubble to delete it)"],
+    [btnTrans, "Show the call as plain text (select text to copy it)"],
+    [btnFontDec, "Smaller text"], [btnFontInc, "Bigger text"],
+    [btnPrev, "Look at the previous call. The live call keeps recording; click again to go one call further back."],
+    [btnLive, "Leave the old call and show the live call again"],
+    [btnNew, "Save this call to Call history and start a fresh one (asks first if there's something to save)"],
+    [btnDiscard, "Throw this call away: its transcript, notes and prompts are NOT saved (asks first)"],
+    [btnHist, "Your saved calls: look at one, copy its details, delete or import"],
+    [btnHelp, "Show or hide your helper buttons (prompts built from the call)"],
+    [btnTasks, "Open Tasks on the call on screen (click again to hide it).`nGreen = all its tasks are done, orange = some are still open."]])
+PinTip()
 
 ; Right-click context menu on the chat/transcript view
 chatCtxMenu := Menu()
@@ -265,7 +279,10 @@ TogglePin(*) {
     pinned := !pinned
     myGui.Opt((pinned ? "+" : "-") "AlwaysOnTop")
     btnPin.Text := pinned ? "📌" : "📍"
+    PinTip()
 }
+
+PinTip() => TipSet(btnPin, pinned ? "On top of other windows now - click to stop" : "Keep this window on top of other windows")
 OnMessage(0x0202, ChatLButtonUp)       ; WM_LBUTTONUP: remember which bubble was clicked
 btnLive.OnEvent("Click", ExitReview)
 myGui.OnEvent("Close", (*) => ExitApp())
@@ -1336,6 +1353,10 @@ EnsureHelperPanel() {
     hBtnCopy.OnEvent("Click",  (*) => CopyPromptToClipboard(hPreview.Value))
     hBtnReload.OnEvent("Click", (*) => LoadHelperActions())
     hBtnOpen.OnEvent("Click",  OpenHelperEditor)
+    TipSetAll([
+        [hBtnCopy, "Copy the prompt in the box above to the clipboard again (with any changes you made in the box)"],
+        [hBtnReload, "Read the helpers file again (after it was changed outside the app)"],
+        [hBtnOpen, "Add, change or reorder your helper buttons and the reusable context"]])
     helperPanelBuilt := true
 }
 
@@ -1455,6 +1476,7 @@ RebuildHelperButtonsCore(info := "") {
             helperFollowButtons.Push(fb)
         }
         helperFollowButtons[i].Visible := helpersVisible && poolOn
+        HelperTips(i, action)
     }
     Loop helperButtons.Length - n
         helperButtons[n + A_Index].Visible := false
@@ -1476,6 +1498,19 @@ RebuildHelperButtonsCore(info := "") {
 }
 
 ; Each pooled button runs whichever helper currently sits at its position
+; Hover tips of helper i's four buttons: its own "tip" (Edit helpers > Tooltip) + what each button does
+HelperTips(i, action) {
+    own := Trim(action.Get("tip", ""))
+    own := (own != "") ? own "`n`n" : ""
+    auto := AutoIsOn(action["id"]) ? "⟳ = Auto-run during calls is on. " : ""
+    right := "`n" auto "Right-click: Auto-run during calls."
+    TipSet(helperButtons[i], own "Builds this helper's prompt from the call and copies it (it shows in the box below)." right)
+    TipSet(helperMiniButtons[i], own "🤖 Builds the prompt and pastes it into Copilot in your browser." right)
+    TipSet(helperPoolButtons[i], own "💬 Asks in this helper's own Copilot window (you can keep chatting there)."
+        . "`nOrange = its window is open; click again to send the prompt into the same chat." right)
+    TipSet(helperFollowButtons[i], own "^ Follow-up: sends this helper's window only what the customer said since it last saw the call." right)
+}
+
 HelperClickedAt(i, *) {
     if (i <= helperActions.Length) {
         t := A_TickCount
@@ -2026,7 +2061,7 @@ ParseHelperImport(text) {
         if ids.Has(id)
             throw Error("Helper ID '" id "' is duplicated.")
         ids[id] := true
-        actions.Push(Map("id", id, "label", a["label"], "prompt", NormalizeNewlines(a["prompt"])))
+        actions.Push(Map("id", id, "label", a["label"], "prompt", NormalizeNewlines(a["prompt"]), "tip", a.Get("tip", "")))
     }
 
     contexts := []
@@ -2066,7 +2101,7 @@ OpenHelperEditor(*) {
     ; Working copies: nothing touches the file until Save
     st := {tab: "A", loading: false, selA: 0, selC: 0, actions: [], contexts: []}
     for a in helperActions
-        st.actions.Push(Map("id", a["id"], "label", a["label"], "prompt", NormalizeNewlines(a["prompt"])))
+        st.actions.Push(Map("id", a["id"], "label", a["label"], "prompt", NormalizeNewlines(a["prompt"]), "tip", a.Get("tip", "")))
     for c in helperContexts
         st.contexts.Push(Map("name", c["name"], "description", c["description"], "context", NormalizeNewlines(c["context"])))
 
@@ -2091,7 +2126,9 @@ OpenHelperEditor(*) {
     btnUpA := ed.Add("Button", "x164 y516 w50 h28", "▲")
     btnDnA := ed.Add("Button", "x220 y516 w50 h28", "▼")
     lblA1 := ed.Add("Text", "x296 y120 w300 c9BA8BA", "BUTTON LABEL")
-    edLabel := ed.Add("Edit", "x296 y140 w568 h26 Background1B2431 cF1F5FB")
+    edLabel := ed.Add("Edit", "x296 y140 w280 h26 Background1B2431 cF1F5FB")
+    lblA3 := ed.Add("Text", "x588 y120 w276 h20 c9BA8BA", "TOOLTIP (optional: what it's for)")
+    edTip := ed.Add("Edit", "x588 y140 w276 h26 Background1B2431 cF1F5FB")
     lblA2 := ed.Add("Text", "x296 y178 w300 c9BA8BA", "PROMPT TEMPLATE")
     hintA := ed.Add("Text", "x296 y198 w568 h34 c9BA8BA", "Placeholders: {{transcript}}  {{verifiedInfo}}  {{currentCaption}}  {{selectedText}}  {{context}}  {{caller}}. Caller and verified info follow {{transcript}} unless you place them yourself.")
     edPrompt := ed.Add("Edit", "x296 y236 w568 h274 Multi VScroll WantReturn Background1B2431 cF1F5FB")
@@ -2130,8 +2167,10 @@ OpenHelperEditor(*) {
             st.selA := has ? idx : 0
             edLabel.Value := has ? st.actions[idx]["label"] : ""
             edPrompt.Value := has ? st.actions[idx]["prompt"] : ""
+            edTip.Value := has ? st.actions[idx].Get("tip", "") : ""
             edLabel.Enabled := has
             edPrompt.Enabled := has
+            edTip.Enabled := has
         } else {
             has := (idx >= 1 && idx <= st.contexts.Length)
             st.selC := has ? idx : 0
@@ -2174,6 +2213,7 @@ OpenHelperEditor(*) {
                 return
             st.actions[i]["label"] := edLabel.Value
             st.actions[i]["prompt"] := edPrompt.Value
+            st.actions[i]["tip"] := edTip.Value
             lvA.Modify(i, , DisplayA(st.actions[i]))
         } else {
             i := st.selC
@@ -2225,7 +2265,7 @@ OpenHelperEditor(*) {
     SwitchTab(kind, *) {
         st.tab := kind
         isA := (kind = "A")
-        for c in [capA, lvA, btnAddA, btnRemA, btnUpA, btnDnA, lblA1, edLabel, lblA2, hintA, edPrompt]
+        for c in [capA, lvA, btnAddA, btnRemA, btnUpA, btnDnA, lblA1, edLabel, lblA3, edTip, lblA2, hintA, edPrompt]
             c.Visible := isA
         for c in [capC, lvC, btnAddC, btnRemC, btnUpC, btnDnC, lblC1, edName, lblC2, edDesc, lblC3, edCtx]
             c.Visible := !isA
@@ -2264,8 +2304,12 @@ OpenHelperEditor(*) {
 
     BuildConfig() {
         acts := []
-        for a in st.actions
-            acts.Push(Map("id", Trim(a["id"]), "label", a["label"], "prompt", StrReplace(a["prompt"], "`r`n", "`n")))
+        for a in st.actions {
+            m := Map("id", Trim(a["id"]), "label", a["label"], "prompt", StrReplace(a["prompt"], "`r`n", "`n"))
+            if (Trim(a.Get("tip", "")) != "")
+                m["tip"] := Trim(a["tip"])           ; optional: shown when the mouse rests on the helper's buttons
+            acts.Push(m)
+        }
         ctxs := []
         for c in st.contexts
             ctxs.Push(Map("name", c["name"], "description", c["description"], "context", StrReplace(c["context"], "`r`n", "`n")))
@@ -2354,6 +2398,7 @@ OpenHelperEditor(*) {
     lvC.OnEvent("ItemSelect", (lv, item, selected) => OnPick("C", item, selected))
     edLabel.OnEvent("Change", OnFieldChange.Bind("A"))
     edPrompt.OnEvent("Change", OnFieldChange.Bind("A"))
+    edTip.OnEvent("Change", OnFieldChange.Bind("A"))
     edName.OnEvent("Change", OnFieldChange.Bind("C"))
     edDesc.OnEvent("Change", OnFieldChange.Bind("C"))
     edCtx.OnEvent("Change", OnFieldChange.Bind("C"))
@@ -2371,6 +2416,18 @@ OpenHelperEditor(*) {
     btnCancel.OnEvent("Click", CloseEditor)
     ed.OnEvent("Close", CloseEditor)
     ed.OnEvent("Escape", CloseEditor)
+    TipSetAll([
+        [btnImport, "Load helpers and context from a .json file (replaces what you see here; nothing is saved until Save changes)"],
+        [btnExport, "Save these helpers and context to a .json file, to share or keep a copy"],
+        [btnTabA, "The helper buttons and their prompts"],
+        [btnTabC, "Guidance added to every helper prompt (at {{context}}, or at the end)"],
+        [btnAddA, "Add a new helper button"], [btnRemA, "Remove the selected helper"],
+        [btnUpA, "Move the selected helper up (earlier in the Helpers panel)"], [btnDnA, "Move the selected helper down"],
+        [btnAddC, "Add a new piece of reusable context"], [btnRemC, "Remove the selected context"],
+        [btnUpC, "Move the selected context up"], [btnDnC, "Move the selected context down"],
+        [edTip, "Shown when the mouse rests on this helper's buttons. Empty = only the usual explanation."],
+        [btnSave, "Save to call-helpers.json (the old file is kept as a backup) and update the Helpers panel"],
+        [btnCancel, "Close without saving"]])
 
     helperEditorGui := ed
     myGui.Opt("+Disabled")                 ; modal, like ShowDialog in the C# app
@@ -3338,6 +3395,8 @@ ShowRemovedWindow(*) {
     btnErase.OnEvent("Click", (*) => DoErase())
     btnClose.OnEvent("Click", (*) => rg.Destroy())
     rg.OnEvent("Close", (*) => rg.Destroy())
+    TipSetAll([[btnRestore, "Put the selected bubble back in the call (double-click works too)"],
+        [btnErase, "Remove it for good: it can't be brought back (asks first)"]])
 
     removedWin := rg
     rg.Show()

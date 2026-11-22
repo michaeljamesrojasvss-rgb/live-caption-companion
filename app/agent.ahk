@@ -5,6 +5,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include app-paths.ahk
 #Include Json.ahk
 #Include debug-trace.ahk
+#Include tooltips.ahk               ; hover tips on buttons (shared)
 #Include screen-grab.ahk
 #Include agent-protocol.ahk
 #Include agent-tools.ahk
@@ -167,24 +168,26 @@ AgtBuildGui() {
     g.SetFont("s10", "Segoe UI")
     g.Add("Text", "x10 y8 w600 h20 vGoalLabel", "What should the agent do?  (Run = Ctrl+Enter)")
     g.Add("Edit", "x10 y30 w600 h64 vGoal Multi WantReturn")
-    g.Add("Button", "x10 y102 w100 h30 vRun Default", "▶ Run").OnEvent("Click", (*) => AgtRunStart())
-    g.Add("Button", "x120 y102 w90 h30 vStop Disabled", "■ Stop").OnEvent("Click", (*) => AgtStop())
-    g.Add("Button", "x220 y102 w110 h30 vNew", "New task").OnEvent("Click", (*) => AgtNewTask())
+    TipAdd(g.Add("Button", "x10 y102 w100 h30 vRun Default", "▶ Run"), "Start the agent on what you typed above (Ctrl+Enter)").OnEvent("Click", (*) => AgtRunStart())
+    TipAdd(g.Add("Button", "x120 y102 w90 h30 vStop Disabled", "■ Stop"), "Stop the agent now").OnEvent("Click", (*) => AgtStop())
+    TipAdd(g.Add("Button", "x220 y102 w110 h30 vNew", "New task"), "Clear the steps and the box, ready for a new task").OnEvent("Click", (*) => AgtNewTask())
     ; DANGEROUS: every tool runs without asking. Off at every start (never saved), confirmed when turned on.
-    g.Add("CheckBox", "x345 y108 w260 h22 vAllowAll", "Allow everything (dangerous)").OnEvent("Click", AgtAllowAllClicked)
+    TipAdd(g.Add("CheckBox", "x345 y108 w260 h22 vAllowAll", "Allow everything (dangerous)")
+        , "Every tool runs WITHOUT asking you first. Off again at every start.").OnEvent("Click", AgtAllowAllClicked)
     g.Add("Text", "x10 y140 w600 h20 vStatus", "")
     g.SetFont("s10 bold")
     g.Add("Text", "x10 y166 w600 h40 vAsk Disabled", "No action is waiting for your OK.")
     g.SetFont("s10 norm")
-    g.Add("Button", "x10 y208 w100 h28 vAllow Disabled", "Allow").OnEvent("Click", (*) => AgtApprove("once"))
-    g.Add("Button", "x120 y208 w160 h28 vAllowRun Disabled", "Allow for this task").OnEvent("Click", (*) => AgtApprove("task"))
-    g.Add("Button", "x290 y208 w90 h28 vDeny Disabled", "Deny").OnEvent("Click", (*) => AgtApprove("deny"))
+    TipAdd(g.Add("Button", "x10 y208 w100 h28 vAllow Disabled", "Allow"), "Let the agent do this one action").OnEvent("Click", (*) => AgtApprove("once"))
+    TipAdd(g.Add("Button", "x120 y208 w160 h28 vAllowRun Disabled", "Allow for this task")
+        , "Let it use this tool again without asking, until this task ends").OnEvent("Click", (*) => AgtApprove("task"))
+    TipAdd(g.Add("Button", "x290 y208 w90 h28 vDeny Disabled", "Deny"), "Don't do it: the agent is told you said no").OnEvent("Click", (*) => AgtApprove("deny"))
     lv := g.Add("ListView", "x10 y246 w600 h200 vSteps -Multi Grid", ["#", "Who", "What"])
     lv.OnEvent("ItemSelect", (ctl, row, sel) => (sel ? AgtShowEntry(row) : 0))
     g.Add("Edit", "x10 y454 w600 h120 vDetail ReadOnly Multi")
-    g.Add("Button", "x10 y582 w100 h30 vTools", "Tools...").OnEvent("Click", (*) => AgtShowTools())
-    g.Add("Button", "x120 y582 w120 h30 vSettings", "Settings file").OnEvent("Click", (*) => AgtOpenSettings())
-    g.Add("Button", "x250 y582 w140 h30 vCopy", "Copy transcript").OnEvent("Click", (*) => AgtCopyTranscript())
+    TipAdd(g.Add("Button", "x10 y582 w100 h30 vTools", "Tools..."), "The tools the agent can use, and which ones ask you first").OnEvent("Click", (*) => AgtShowTools())
+    TipAdd(g.Add("Button", "x120 y582 w120 h30 vSettings", "Settings file"), "Open the agent's settings file (limits, shortcut...)").OnEvent("Click", (*) => AgtOpenSettings())
+    TipAdd(g.Add("Button", "x250 y582 w140 h30 vCopy", "Copy transcript"), "Copy every step of this task to the clipboard").OnEvent("Click", (*) => AgtCopyTranscript())
     g.OnEvent("Size", AgtOnSize)
     g.OnEvent("Close", (*) => AgtHide())
     g.OnEvent("Escape", (*) => AgtHide())

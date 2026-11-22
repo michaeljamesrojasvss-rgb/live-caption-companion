@@ -15,6 +15,7 @@ NotesResizeInit() {
     try {
         try notesHeightPx := Integer(IniRead(MIC_INI, "Window", "NotesH", 100))
         notesSplitter := myGui.Add("Text", "x0 y0 w10 h6 +0x100 Background2A3442", "")   ; 0x100 = receives clicks
+        TipSet(notesSplitter, "Drag up or down to make the notes box bigger or smaller")
         OnMessage(0x0201, NotesSplitterDown)       ; WM_LBUTTONDOWN
         OnMessage(0x0020, NotesSplitterCursor)     ; WM_SETCURSOR: show the up/down arrow
         RelayoutMain()

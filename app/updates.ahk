@@ -105,6 +105,7 @@ UpdBuildUi() {
     updStatusW := w
     updPill := myGui.Add("Text", Format("x0 y0 w{} h24 +0x100 +0x200 Center Hidden Background1D4ED8 cFFFFFF", UPD_PILL_W), "⬆ Update")
     updPill.OnEvent("Click", UpdSafe(UpdShowDialog))
+    TipSet(updPill, "A new version is ready: click to see what's new and update")
 }
 
 UpdBuildMenu() {
@@ -267,6 +268,8 @@ UpdShowDialog() {
     updDlg := {gui: g, status: st, btnUpdate: btnUpdate}
     btnUpdate.OnEvent("Click", UpdSafe(UpdBeginUpdate))
     btnLater.OnEvent("Click", (*) => UpdCloseDialog())
+    TipSetAll([[btnUpdate, "Download and install it now: the Companion closes and reopens by itself (your calls, helpers and settings are kept)"],
+        [btnLater, "Not now: the blue Update button stays, so you can update when you're free"]])
     g.OnEvent("Close", (*) => UpdCloseDialog())
     g.OnEvent("Escape", (*) => UpdCloseDialog())
     g.Show()

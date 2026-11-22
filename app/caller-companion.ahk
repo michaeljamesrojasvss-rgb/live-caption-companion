@@ -189,6 +189,12 @@ CallerBuildUi() {
     callerBtnCopy.OnEvent("Click", CallerSafe(CallerCopy))
     callerBtnEdit.OnEvent("Click", CallerSafe(CallerManualEntry))
     callerBtnClose.OnEvent("Click", CallerSafe(CallerClose))
+    TipSetAll([
+        [callerBtnSfNum, "Search Salesforce for the caller's phone number"],
+        [callerBtnSfName, "Search Salesforce for the caller's name"],
+        [callerBtnCopy, "Copy the caller's number (or the name if there's no number)"],
+        [callerBtnEdit, "Type the caller's number and/or name yourself"],
+        [callerBtnClose, "Hide this caller (and the caller card)"]])
     callerUiBuilt := true
 }
 
@@ -587,6 +593,9 @@ CallerShowCard() {
         callerCardSfNum.OnEvent("Click", CallerSafe(CallerSearchNumber))
         callerCardSfName.OnEvent("Click", CallerSafe(CallerSearchName))
         closeBtn.OnEvent("Click", CallerSafe(CallerHideCard))
+        TipSetAll([[callerCardSfNum, "Search Salesforce for the caller's phone number"],
+            [callerCardSfName, "Search Salesforce for the caller's name"],
+            [closeBtn, "Hide this card (Settings > Calls & 3CX can turn the card off)"]])
         callerCard := g
     }
     CallerRefreshCard()

@@ -5,6 +5,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include app-paths.ahk
 #Include Json.ahk                                     ; package-lib.ahk (via app-paths) uses it
 #Include debug-trace.ahk
+#Include tooltips.ahk               ; hover tips on buttons (shared)
 #Include screen-grab.ahk
 #Include *i %A_ScriptDir%\lib\OCR.ahk                 ; Windows' built-in OCR
 #Include same-value-read.ahk

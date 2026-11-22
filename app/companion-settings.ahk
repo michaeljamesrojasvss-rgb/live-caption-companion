@@ -18,7 +18,7 @@
 ;     text    {key, label, hint, rows, need, get, set, def}  multi-line; need = text it must contain
 ;     buttons {items: [[label, fn], ...]}      a row of buttons (act right away)
 ;     app     {key, label, get, flip, def, items}   an On tick + that app's buttons on one row
-;   Every field has sec (its section number, see CSET_SECTIONS).
+;   Every field has sec (its section number, see CSET_SECTIONS); tip = its hover tip (buttons: [label, fn, tip]).
 ; * The other apps (Tasks, Screen ask, Same value, Agent, the pool) keep their own settings
 ;   windows: Apps only switches them on/off and opens them.
 ; * Every entry point is wrapped in try/catch: captions and the call are never affected.
@@ -27,6 +27,7 @@
 
 CSET_SECTIONS := ["Calls && 3CX", "Copilot", "Apps", "Captions && mic", "Updates && help", "Troubleshooting"]
 CSET_TRAY := "Settings..."
+CSET_TIPS_TRAY := "Show tips on buttons (all apps)"
 CSET_PX := 214                     ; where the page starts (right of the section list)
 CSET_PW := 640                     ; page width
 cSetGui := 0
@@ -36,78 +37,126 @@ cSetSec := 1
 CSetInit() {
     try {
         A_TrayMenu.Insert("1&")
+        A_TrayMenu.Insert("1&", CSET_TIPS_TRAY, (*) => CSetTipsToggle())
         A_TrayMenu.Insert("1&", CSET_TRAY, (*) => CSetShow())
+        CSetTipsSyncTray()
     } catch as err {
         CSetReport(err)
     }
 }
 
+; Tips on / off for every app (data\tips.ini), from the tray or Settings > Updates & help
+CSetTipsToggle() {
+    TipsSetEnabled(!TipsEnabled())
+    CSetTipsSyncTray()
+    statusText.Text := "Status: tips on buttons are now " (TipsEnabled() ? "on" : "off") " (in every app)"
+}
+
+CSetTipsSyncTray() {
+    try {
+        if TipsEnabled()
+            A_TrayMenu.Check(CSET_TIPS_TRAY)
+        else
+            A_TrayMenu.Uncheck(CSET_TIPS_TRAY)
+    }
+}
+
 ; ------------------------------------------------------------------ the list
+; tip: shown when the mouse rests on the setting. Buttons: [label, fn, tip].
 CSetFields() {
     f := []
     ; ---- 1  Calls & 3CX
     f.Push({sec: 1, type: "head", label: "3CX caller"})
-    f.Push(CSetCallerFlag("Enabled", "Detect calls from 3CX"))
-    f.Push(CSetCallerFlag("AutoNewCall", "Start a new call record when a call rings"))
-    f.Push(CSetCallerFlag("Popup", "Show the caller card near 3CX"))
-    f.Push(CSetCallerFlag("FocusOnRing", "Switch to the Companion when a call rings"))
+    f.Push(CSetCallerFlag("Enabled", "Detect calls from 3CX"
+        , "Watch 3CX for ringing and answered calls and show who is calling. The app only reads 3CX, it never clicks or types in it."))
+    f.Push(CSetCallerFlag("AutoNewCall", "Start a new call record when a call rings"
+        , "When a call rings, the call on screen is saved to Call history and a fresh one starts by itself"))
+    f.Push(CSetCallerFlag("Popup", "Show the caller card near 3CX"
+        , "A small card next to the 3CX window with the caller and Salesforce search buttons"))
+    f.Push(CSetCallerFlag("FocusOnRing", "Switch to the Companion when a call rings"
+        , "Bring the Companion window to the front when a call rings"))
     f.Push({sec: 1, type: "head", label: "Q-login alert"})
     f.Push({sec: 1, type: "check", key: "QA.Enabled", label: QA_ITEM_ON, def: 1
+        , tip: "A small alert when 3CX is closed or you're not logged in to the queue (Q)"
         , get: () => QAlertSetting("Enabled", 1) = "1", flip: () => QAToggle()})
     f.Push({sec: 1, type: "choice", key: "QA.Position", label: "Where the alert shows", choices: QA_POSITIONS
+        , tip: "Where on the screen the alert appears. `"Near the 3CX window`" follows 3CX."
         , def: QA_DEFAULT_POS, get: () => QAlertSetting("Position", QA_DEFAULT_POS), set: CSetQaPosition})
-    for k in ["ToastSeconds", "MaxToasts", "IntervalSec"]
-        f.Push(CSetQaNum(k))
-    f.Push({sec: 1, type: "buttons", items: [["Show a test alert", () => QAShowToast(true)]]})
+    f.Push(CSetQaNum("ToastSeconds", "How long each alert stays before it closes by itself"))
+    f.Push(CSetQaNum("MaxToasts", "Most alerts on the screen at once; the oldest closes when a new one comes"))
+    f.Push(CSetQaNum("IntervalSec", "How often 3CX and its Q login are checked"))
+    f.Push({sec: 1, type: "buttons", items: [["Show a test alert", () => QAShowToast(true)
+        , "Show an alert now, to see where and how it appears"]]})
 
     ; ---- 2  Copilot
     f.Push({sec: 2, type: "head", label: "Copilot pool (the 💬 and ^ buttons beside the helpers)"})
     f.Push({sec: 2, type: "check", key: "Pool.Enabled", label: POOLLINK_USE, def: 1
+        , tip: "Copilot pages inside the app answer the 💬 and ^ buttons and the auto helpers.`nOff = only 🤖 (paste into Copilot in your browser)."
         , get: PoolLinkEnabled, flip: PoolLinkToggle})
-    f.Push({sec: 2, type: "buttons", items: [["Open the pool window", PoolLinkShowWindow]
-        , ["Restart the pool", PoolLinkRestart], ["Sign out of Copilot...", PoolLinkSignOut]]})
+    f.Push({sec: 2, type: "buttons", items: [["Open the pool window", PoolLinkShowWindow
+            , "Sign in to Copilot, see whether the pool is ready, pick the chat site"]
+        , ["Restart the pool", PoolLinkRestart, "Close the pool and start it again. Its Copilot windows close; you stay signed in."]
+        , ["Sign out of Copilot...", PoolLinkSignOut, "Sign out (e.g. to use another account) and start the pool again"]]})
     f.Push({sec: 2, type: "head", label: "Auto helpers"})
     f.Push({sec: 2, type: "note", label: "To pick which helpers follow the call by themselves: right-click a helper button > Auto-run during calls."})
-    f.Push(CSetAutoNum("MinChars", "New customer letters before a follow-up", "1 = any new words", 1, 5000))
-    f.Push(CSetAutoNum("QuietMs", "Customer quiet this long = finished (ms)", "1000 ms = 1 second", 100, 30000))
-    f.Push(CSetAutoNum("MinGapMs", "At least this long between follow-ups (ms)", "0 = no wait", 0, 600000))
+    f.Push(CSetAutoNum("MinChars", "New customer letters before a follow-up", "1 = any new words", 1, 5000
+        , "How much new customer speech is needed before an auto helper sends a follow-up"))
+    f.Push(CSetAutoNum("QuietMs", "Customer quiet this long = finished (ms)", "1000 ms = 1 second", 100, 30000
+        , "The customer must be quiet this long before a follow-up goes, so it isn't sent in the middle of a sentence"))
+    f.Push(CSetAutoNum("MinGapMs", "At least this long between follow-ups (ms)", "0 = no wait", 0, 600000
+        , "The shortest time between two follow-ups to the same helper"))
     f.Push({sec: 2, type: "text", key: "Auto.FollowUpPrompt", rows: 4, need: "{{new}}"
         , label: "Follow-up message  ({{new}} = what the customer just said)"
+        , tip: "What an auto helper sends when the customer said something new. {{new}} is replaced by those words."
         , def: StrReplace(AUTO_DEFAULTS["FollowUpPrompt"], "\n", "`n")
         , get: () => StrReplace(AutoSetting("FollowUpPrompt"), "\n", "`n")
         , set: (v) => IniWrite(StrReplace(v, "`n", "\n"), MIC_INI, "AutoHelpers", "FollowUpPrompt")})
     f.Push({sec: 2, type: "head", label: "Paste into Copilot (the 🤖 buttons)"})
-    f.Push({sec: 2, type: "buttons", items: [["Learn: message box", () => AssistStartLearn("Input")]
-        , ["Learn: Send button", () => AssistStartLearn("Send")], ["Learn: New chat button", () => AssistStartLearn("NewChat")]]})
+    f.Push({sec: 2, type: "buttons", items: [["Learn: message box", () => AssistStartLearn("Input")
+            , "Teach 🤖 where Copilot's message box is: rest the mouse on it in your browser and press F8 (Esc cancels)"]
+        , ["Learn: Send button", () => AssistStartLearn("Send"), "Teach 🤖 where Copilot's Send button is (mouse on it, F8)"]
+        , ["Learn: New chat button", () => AssistStartLearn("NewChat"), "Teach 🤖 where Copilot's New chat button is (mouse on it, F8)"]]})
 
     ; ---- 3  Apps
     f.Push({sec: 3, type: "note", label: "Each app runs on its own: if one has a problem, captions and the call carry on. "
         . "On = it starts with the Companion. The buttons work while an app is off too."})
     f.Push({sec: 3, type: "app", key: "App.Tasks", label: TASKLINK_ITEM, def: 1, get: TaskLinkEnabled, flip: TaskLinkToggle
-        , items: [["Open", () => TaskLinkShowApp("show")], ["Settings...", () => TaskLinkShowApp("settings")]]})
+        , tip: "Timers, checklists and reminders in their own window. They keep counting when the Companion closes."
+        , items: [["Open", () => TaskLinkShowApp("show"), "Open the Tasks window"]
+            , ["Settings...", () => TaskLinkShowApp("settings"), "Tasks' own settings (alerts, sounds, timer buttons)"]]})
     f.Push({sec: 3, type: "app", key: "App.MainHelper", label: MAINHELPER_ITEM, def: 0, get: MainHelperEnabled
+        , tip: "Extra shortcut keys, like a Salesforce or ServiceChannel search for what's on the clipboard"
         , flip: MainHelperToggle, items: []})
     f.Push({sec: 3, type: "app", key: "App.ScreenAsk", label: SALINK_MENU, def: 0, get: SaLinkEnabled, flip: SaLinkToggle
-        , items: [["Capture now", CSetScreenAskNow], ["Settings...", () => SaLinkCommand("settings")]]})
+        , tip: "Ctrl+Shift+Alt+A freezes your screens: mark something and ask Copilot about it"
+        , items: [["Capture now", CSetScreenAskNow, "Freeze the screens now and mark something (this window steps aside)"]
+            , ["Settings...", () => SaLinkCommand("settings"), "Screen ask's own settings (shortcut, colour)"]]})
     f.Push({sec: 3, type: "app", key: "App.SameValue", label: SVLINK_MENU, def: 0, get: SvLinkEnabled, flip: SvLinkToggle
-        , items: [["Show now", () => SvLinkCommand("show")], ["Settings...", () => SvLinkCommand("settings")]]})
+        , tip: "Hold CapsLock: equal values on your screens light up in the same colour (a tap stays CapsLock)"
+        , items: [["Show now", () => SvLinkCommand("show"), "Show the highlights now, without holding the key"]
+            , ["Settings...", () => SvLinkCommand("settings"), "Its own settings (the key, what counts as a value, colours)"]]})
     f.Push({sec: 3, type: "app", key: "App.Agent", label: AGTLINK_MENU, def: AppIsDev() ? 1 : 0, get: AgtLinkEnabled
-        , flip: AgtLinkToggle, items: [["Open", AgtLinkOpen]]})
+        , tip: "An AI that uses tools on your PC, asking your OK first (early test)"
+        , flip: AgtLinkToggle, items: [["Open", AgtLinkOpen, "Open the Agent window"]]})
     f.Push({sec: 3, type: "note", label: "The Copilot pool is under Copilot."})
 
     ; ---- 4  Captions & mic
     f.Push({sec: 4, type: "head", label: "Windows Live Captions"})
     f.Push({sec: 4, type: "note", label: "Also in the right-click menu of the chat view."})
-    f.Push({sec: 4, type: "buttons", items: [["Restart Live Captions", LctSafe(LctRestart)]
-        , ["Test Live Captions (plays a sample voice)", LctSafe(LctTest)]]})
+    f.Push({sec: 4, type: "buttons", items: [["Restart Live Captions", LctSafe(LctRestart)
+            , "Close and reopen Windows Live Captions - try it when captions stop coming"]
+        , ["Test Live Captions (plays a sample voice)", LctSafe(LctTest)
+            , "Plays a short sample voice, so you can see captions arrive in the Companion"]]})
     f.Push({sec: 4, type: "head", label: "Mic captions (experimental: your own voice)"})
     if micAvailable {
         devs := [MicDeviceLabel(0)]
         for name in micDeviceNames
             devs.Push(name)
         f.Push({sec: 4, type: "check", key: "Mic.On", label: "Experimental: Mic captions", def: 0
+            , tip: "Also caption what YOU say, from your microphone (experimental; uses more of the PC)"
             , get: () => micEnabled, flip: () => ToggleMicCaptions()})
         f.Push({sec: 4, type: "choice", key: "Mic.Device", label: "Microphone", choices: devs, def: MicDeviceLabel(0)
+            , tip: "Which microphone mic captions listen to"
             , get: () => MicDeviceLabel(micCurrentDevice), set: CSetMicDevice})
     } else {
         f.Push({sec: 4, type: "note", label: "Not available on this PC (the speech files for mic captions aren't installed)."})
@@ -115,44 +164,58 @@ CSetFields() {
 
     ; ---- 5  Updates & help
     f.Push({sec: 5, type: "head", label: "Updates  (this copy: version " APP_VERSION ")"})
-    f.Push({sec: 5, type: "buttons", items: [["Check for updates", UpdSafe(() => UpdStartCheck(true))]
-        , ["Set update link...", UpdSafe(UpdSetLink)], ["Go back to the previous version...", UpdSafe(UpdRollback)]]})
+    f.Push({sec: 5, type: "buttons", items: [["Check for updates", UpdSafe(() => UpdStartCheck(true))
+            , "Look for a new version now (it also checks by itself every few hours)"]
+        , ["Set update link...", UpdSafe(UpdSetLink), "Where updates come from - change it only if you were told to"]
+        , ["Go back to the previous version...", UpdSafe(UpdRollback)
+            , "Undo the last update and go back to the version before (copies installed with Setup.bat)"]]})
+    f.Push({sec: 5, type: "head", label: "Tips"})
+    f.Push({sec: 5, type: "check", key: "Tips.On", label: "Show a tip when the mouse rests on a button", def: 1
+        , tip: "These little explanations. Off = no tips in any of the apps (Tasks, Screen ask, ... too).", get: TipsEnabled
+        , flip: CSetTipsToggle})
     f.Push({sec: 5, type: "head", label: "Help and your data"})
-    f.Push({sec: 5, type: "buttons", items: [["Tutorial (how to use the app)", CSetTutorial]
-        , ["Open data folder", () => Run('explorer.exe "' DATA_DIR '"')]]})
-    f.Push({sec: 5, type: "buttons", items: [["Import && merge from another copy...", () => MergeImportStart()]]})
+    f.Push({sec: 5, type: "buttons", items: [["Tutorial (how to use the app)", CSetTutorial
+            , "A guided tour of the Companion (this window closes first)"]
+        , ["Open data folder", () => Run('explorer.exe "' DATA_DIR '"'), "Your calls, helpers, settings and logs"]]})
+    f.Push({sec: 5, type: "buttons", items: [["Import && merge from another copy...", () => MergeImportStart()
+        , "Bring in calls and helpers from another copy or a backup. It shows what will change first; duplicates are skipped."]]})
 
     ; ---- 6  Troubleshooting
     f.Push({sec: 6, type: "head", label: "Debug trace"})
     f.Push({sec: 6, type: "check", key: "Dbg.On", label: DBG_ITEM, def: 0
+        , tip: "Writes the timing of every click and step to a file, to find delays. Never what's said on the call."
         , get: () => IniRead(DBG_INI, "Trace", "On", "0") = "1", flip: () => DbgToggle()})
     f.Push({sec: 6, type: "head", label: "Logs"})
-    f.Push({sec: 6, type: "buttons", items: [["Debug trace", () => CSetOpenFile(DBG_FILE)]
-        , ["Errors", () => CSetOpenFile(ERR_LOG)], ["3CX caller / Q alert", () => CSetOpenFile(CALLER_LOG)]]})
-    f.Push({sec: 6, type: "buttons", items: [["Updates", () => CSetOpenFile(UPD_LOG)]
-        , ["Paste into Copilot", () => CSetOpenFile(ASSIST_LOG)], ["Copilot targets file", () => CSetOpenFile(ASSIST_TARGETS)]]})
+    f.Push({sec: 6, type: "buttons", items: [["Debug trace", () => CSetOpenFile(DBG_FILE), "Open the debug trace (timings)"]
+        , ["Errors", () => CSetOpenFile(ERR_LOG), "Problems the app ran into"]
+        , ["3CX caller / Q alert", () => CSetOpenFile(CALLER_LOG), "What call detection and the Q-login alert saw"]]})
+    f.Push({sec: 6, type: "buttons", items: [["Updates", () => CSetOpenFile(UPD_LOG), "What the update checks and installs did"]
+        , ["Paste into Copilot", () => CSetOpenFile(ASSIST_LOG), "What the 🤖 buttons did"]
+        , ["Copilot targets file", () => CSetOpenFile(ASSIST_TARGETS), "Where the Learn buttons saved Copilot's message box and buttons"]]})
     f.Push({sec: 6, type: "head", label: "Try without a real call"})
-    f.Push({sec: 6, type: "buttons", items: [["Simulate incoming call...", CallerSafe(CallerSimulateRing)]
-        , ["Simulate call ended", CallerSafe(CallerOnIdle)]]})
+    f.Push({sec: 6, type: "buttons", items: [["Simulate incoming call...", CallerSafe(CallerSimulateRing)
+            , "Pretend a call is ringing, to try the caller strip and the caller card"]
+        , ["Simulate call ended", CallerSafe(CallerOnIdle), "Pretend the call just ended"]]})
     f.Push({sec: 6, type: "head", label: "Memory"})
-    f.Push({sec: 6, type: "buttons", items: [["Built-in browser memory (Copilot pool, Screen ask)...", PoolLinkMemoryReport]]})
+    f.Push({sec: 6, type: "buttons", items: [["Built-in browser memory (Copilot pool, Screen ask)...", PoolLinkMemoryReport
+        , "How much memory the built-in browsers use, and which app uses them"]]})
     return f
 }
 
 ; Entry makers: each call gets its own variables (closures made in a loop would all share one)
-CSetCallerFlag(key, label) {
-    return {sec: 1, type: "check", key: "Caller." key, label: label, def: CALLER_DEFAULTS.Get(key, 0)
+CSetCallerFlag(key, label, tip) {
+    return {sec: 1, type: "check", key: "Caller." key, label: label, tip: tip, def: CALLER_DEFAULTS.Get(key, 0)
         , get: () => CallerFlag(key), flip: () => CallerToggle(key)}
 }
 
-CSetQaNum(key) {
+CSetQaNum(key, tip) {
     c := QA_CHOICES[key]
     return {sec: 1, type: "num", key: "QA." key, label: c[1] (c[3] != "" ? " (" c[3] ")" : ""), hint: c[5] " to " c[6]
-        , min: c[5], max: c[6], def: c[4], get: () => QAInt(key), set: (v) => QASaveValue(key, Integer(v))}
+        , tip: tip, min: c[5], max: c[6], def: c[4], get: () => QAInt(key), set: (v) => QASaveValue(key, Integer(v))}
 }
 
-CSetAutoNum(key, label, hint, lo, hi) {
-    return {sec: 2, type: "num", key: "Auto." key, label: label, hint: hint, min: lo, max: hi, def: AUTO_DEFAULTS[key]
+CSetAutoNum(key, label, hint, lo, hi, tip) {
+    return {sec: 2, type: "num", key: "Auto." key, label: label, hint: hint, tip: tip, min: lo, max: hi, def: AUTO_DEFAULTS[key]
         , get: () => AutoNum(key), set: (v) => IniWrite(Integer(v), MIC_INI, "AutoHelpers", key)}
 }
 
@@ -222,9 +285,15 @@ CSetShow(*) {
             rowY[f.sec] := y + used
         }
         g.Add("Text", "x12 y544 w836 h1 0x10")       ; a thin line above the buttons (SS_ETCHEDHORZ)
-        g.Add("Button", "x12 y556 w100 h30 Default", "Save").OnEvent("Click", (*) => CSetSave())
-        g.Add("Button", "x120 y556 w90 h30", "Close").OnEvent("Click", (*) => CSetClose())
-        g.Add("Button", "x218 y556 w190 h30", "Defaults (this section)").OnEvent("Click", (*) => CSetDefaults())
+        b := g.Add("Button", "x12 y556 w100 h30 Default", "Save")
+        b.OnEvent("Click", (*) => CSetSave())
+        TipSet(b, "Apply the ticks and values you changed (the window stays open)")
+        b := g.Add("Button", "x120 y556 w90 h30", "Close")
+        b.OnEvent("Click", (*) => CSetClose())
+        TipSet(b, "Close the window (asks first if something isn't saved)")
+        b := g.Add("Button", "x218 y556 w190 h30", "Defaults (this section)")
+        b.OnEvent("Click", (*) => CSetDefaults())
+        TipSet(b, "Fill in the values the app ships with, for this section only. Nothing changes until Save.")
         g.Add("Text", "x420 y552 w428 h40 cGray vStatus", "Ticks and values apply when you press Save. Buttons act right away.")
         g.OnEvent("Close", (*) => !CSetClose())  ; true = keep the window (Cancel on the question)
         g.OnEvent("Escape", (*) => CSetClose())
@@ -253,6 +322,8 @@ CSetAddField(g, f, y, &used) {
         case "check":
             f.ctl := g.Add("CheckBox", "x" px " y" y " w" pw " h24", f.label)
             f.ctls.Push(f.ctl)
+            if f.HasOwnProp("tip")
+                TipSet(f.ctl, f.tip)
             used := 30
         case "num", "choice":
             f.ctls.Push(g.Add("Text", "x" px " y" (y + 3) " w" (lw - 8) " h20", f.label))
@@ -264,6 +335,8 @@ CSetAddField(g, f, y, &used) {
             else
                 f.ctl := g.Add("DropDownList", "x" (px + lw) " y" y " w" cw, f.choices)
             f.ctls.Push(f.ctl)
+            if f.HasOwnProp("tip")
+                TipSet(f.ctl, f.tip)
             if (f.HasOwnProp("hint") && f.hint != "") {
                 hx := px + lw + cw + 10
                 f.ctls.Push(g.Add("Text", "x" hx " y" (y + 3) " w" (px + pw - hx) " h20 cGray", f.hint))
@@ -274,6 +347,8 @@ CSetAddField(g, f, y, &used) {
             h := f.rows * 20 + 8
             f.ctl := g.Add("Edit", "x" px " y" (y + 24) " w" pw " h" h " Multi WantReturn VScroll")
             f.ctls.Push(f.ctl)
+            if f.HasOwnProp("tip")
+                TipSet(f.ctl, f.tip)
             used := 24 + h + 8
         case "buttons":
             bx := px
@@ -281,6 +356,8 @@ CSetAddField(g, f, y, &used) {
                 w := CSetButtonW(it[1])
                 b := g.Add("Button", "x" bx " y" y " w" w " h28", it[1])
                 b.OnEvent("Click", CSetRun.Bind(it[2]))
+                if (it.Length >= 3)
+                    TipSet(b, it[3])
                 f.ctls.Push(b)
                 bx += w + 8
             }
@@ -288,11 +365,15 @@ CSetAddField(g, f, y, &used) {
         case "app":
             f.ctl := g.Add("CheckBox", "x" px " y" (y + 2) " w380 h24", f.label)
             f.ctls.Push(f.ctl)
+            if f.HasOwnProp("tip")
+                TipSet(f.ctl, f.tip)
             bx := px + 390
             for it in f.items {
                 w := Max(100, CSetButtonW(it[1]))
                 b := g.Add("Button", "x" bx " y" y " w" w " h28", it[1])
                 b.OnEvent("Click", CSetRun.Bind(it[2]))
+                if (it.Length >= 3)
+                    TipSet(b, it[3])
                 f.ctls.Push(b)
                 bx += w + 8
             }

@@ -5,6 +5,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include app-paths.ahk
 #Include Json.ahk
 #Include debug-trace.ahk
+#Include tooltips.ahk               ; hover tips on buttons (shared)
 #Include webview-guard.ahk
 #Include *i %A_ScriptDir%\lib\WebView2\WebView2.ahk
 #Include *i %A_ScriptDir%\lib\OCR.ahk                 ; Windows' built-in OCR ("Copy text")
@@ -1010,10 +1011,13 @@ SaShowSettings(*) {
     cuCtl := g.Add("CheckBox", "xm w440 h20 y+14 Checked" (SaNum("CloseUps") ? 1 : 0), "Also send a close-up of each marked area (sharper for small text)")
     ncCtl := g.Add("CheckBox", "w440 h20 Checked" (SaNum("NewChat") ? 1 : 0), "Start a new chat with every capture (off = carry on in the same chat)")
     g.Add("Text", "w440 h40 y+12 c666666", "More options (the prompt text, image size, line width) are in the settings file.")
+    TipSetAll([[hkCtl, "Click here, then press the keys you want (like Ctrl+Shift+Alt+A)"],
+        [cuCtl, "Besides the whole screens, send an enlarged picture of each area you marked"],
+        [ncCtl, "On: every capture starts a fresh Copilot chat. Off: follow-up questions about earlier captures work."]])
     g.Add("Button", "xm w100 h30 y+8 Default", "Save").OnEvent("Click", Save)
     g.Add("Button", "x+8 w100 h30", "Cancel").OnEvent("Click", (*) => g.Hide())
-    g.Add("Button", "x+8 w120 h30", "Settings file").OnEvent("Click", OpenFile)
-    g.Add("Button", "x+8 w90 h30", "Try it").OnEvent("Click", (*) => (g.Hide(), SetTimer(SaCapture, -400)))
+    TipAdd(g.Add("Button", "x+8 w120 h30", "Settings file"), "Open the settings file: the prompt text, image size, line width...").OnEvent("Click", OpenFile)
+    TipAdd(g.Add("Button", "x+8 w90 h30", "Try it"), "Freeze the screens now and mark something, to try your settings").OnEvent("Click", (*) => (g.Hide(), SetTimer(SaCapture, -400)))
     g.OnEvent("Close", (*) => g.Hide())
     g.OnEvent("Escape", (*) => g.Hide())
     g.Show()

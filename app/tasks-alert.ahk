@@ -57,22 +57,31 @@ TAlertShow(n, quiet := false) {
         links := TaskLinksAround(n)
         if links.Length {
             txt := (links.Length = 1) ? "🔗  Open link  (" links[1].title ")" : "🔗  Open a link (" links.Length ")"
-            g.Add("Button", "xm y+8 h26 " inner, txt).OnEvent("Click", TAlertAction.Bind(id, "link"))
+            lb := g.Add("Button", "xm y+8 h26 " inner, txt)
+            lb.OnEvent("Click", TAlertAction.Bind(id, "link"))
+            TipSet(lb, "Open the link found in this task's checklist")
         }
         bw := (w - 24 - 3 * 6) // 4
         opt := "h26 w" bw
-        g.Add("Button", "xm y+10 " opt, "✓ Done").OnEvent("Click", TAlertAction.Bind(id, "done"))
-        g.Add("Button", "x+6 " opt, "After my call").OnEvent("Click", TAlertAction.Bind(id, "after"))
-        g.Add("Button", "x+6 " opt, "Open").OnEvent("Click", TAlertAction.Bind(id, "open"))
-        g.Add("Button", "x+6 " opt, "Hide").OnEvent("Click", TAlertAction.Bind(id, "hide"))
+        for b in [["xm y+10 ", "✓ Done", "done", "Tick the task done and close this alert"]
+                , ["x+6 ", "After my call", "after", "Hide it while you're busy; it comes back a little after"]
+                , ["x+6 ", "Open", "open", "Show this task in the Tasks window"]
+                , ["x+6 ", "Hide", "hide", "Close this alert; the timer stays overdue (Settings: whether it reminds you again)"]] {
+            ab := g.Add("Button", b[1] opt, b[2])
+            ab.OnEvent("Click", TAlertAction.Bind(id, b[3]))
+            TipSet(ab, b[4])
+        }
         snoozes := TaskDurationList(TaskSetting("SnoozeMinutes"), 6)
         if snoozes.Length {
             g.SetFont("s9 norm cC9D1DC")
             g.Add("Text", "xm y+8 w58 h24 +0x200", "Snooze")
             g.SetFont("s9 norm c000000")
             sw := Max(40, (w - 24 - 64 - (snoozes.Length - 1) * 6) // snoozes.Length)
-            for i, secs in snoozes
-                g.Add("Button", "x+6 yp h24 w" sw, TaskDurLabel(secs)).OnEvent("Click", TAlertSnooze.Bind(id, secs))
+            for i, secs in snoozes {
+                sb := g.Add("Button", "x+6 yp h24 w" sw, TaskDurLabel(secs))
+                sb.OnEvent("Click", TAlertSnooze.Bind(id, secs))
+                TipSet(sb, "Remind me again in " TaskDurLabel(secs))
+            }
         }
         g.Show("Hide AutoSize")
         talertToasts[id] := g

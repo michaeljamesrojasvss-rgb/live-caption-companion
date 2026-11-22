@@ -6,6 +6,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include app-paths.ahk
 #Include Json.ahk
 #Include debug-trace.ahk
+#Include tooltips.ahk               ; hover tips on buttons (shared)
 #Include webview-guard.ahk
 #Include *i %A_ScriptDir%\lib\WebView2\WebView2.ahk
 #Include copilot-pool-browser.ahk
@@ -1569,26 +1570,28 @@ PoolBuildGui() {
     }
     pg.Add("Text", "xm w470 h32 vReason", "")
     pg.Add("Text", "xm w470 vAccount", "Account: not known yet")
-    pg.Add("Button", "xm w120 h30", "Sign in...").OnEvent("Click", PoolOpenSignIn)
-    pg.Add("Button", "x+8 w170 h30 vBtnConfirm Hidden", "It's my work account").OnEvent("Click", PoolConfirmWork)
-    pg.Add("Button", "x+8 w150 h30", "Sign out and restart").OnEvent("Click", (*) => PoolSignOut(true))
-    pg.Add("CheckBox", "xm y+10 vAllowPersonal" (PoolNum("AllowPersonal") ? " Checked" : ""),
-        "Allow personal accounts (testing only - never for customer calls)").OnEvent("Click", PoolAllowPersonalClicked)
+    TipAdd(pg.Add("Button", "xm w120 h30", "Sign in..."), "Open the Copilot sign-in page (one sign-in for all the pool's pages)").OnEvent("Click", PoolOpenSignIn)
+    TipAdd(pg.Add("Button", "x+8 w170 h30 vBtnConfirm Hidden", "It's my work account")
+        , "The pool couldn't read which account is signed in: confirm it's your work account").OnEvent("Click", PoolConfirmWork)
+    TipAdd(pg.Add("Button", "x+8 w150 h30", "Sign out and restart"), "Sign out of Copilot (e.g. to use another account) and start the pool again").OnEvent("Click", (*) => PoolSignOut(true))
+    TipAdd(pg.Add("CheckBox", "xm y+10 vAllowPersonal" (PoolNum("AllowPersonal") ? " Checked" : ""),
+        "Allow personal accounts (testing only - never for customer calls)")
+        , "Only for testing at home. Customer calls must only ever go to your work Copilot.").OnEvent("Click", PoolAllowPersonalClicked)
     pg.Add("Text", "xm y+10", "Copilot pages kept ready:")
     pg.Add("Edit", "x+6 yp-3 w45 Number vViews", PoolNum("Views"))
     pg.Add("UpDown", "Range1-6", PoolNum("Views")).OnEvent("Change", PoolViewsChanged)
     pg.Add("Text", "x+12 yp+3 w220 vViewInfo", "")
     pg.Add("ListView", "xm y+10 w470 h110 -Multi vList", ["Request", "Status", "Time"])
     pg["List"].ModifyCol(1, 200), pg["List"].ModifyCol(2, 200), pg["List"].ModifyCol(3, 50)
-    pg.Add("Button", "xm w150 h28", "Cancel selected").OnEvent("Click", PoolCancelSelected)
+    TipAdd(pg.Add("Button", "xm w150 h28", "Cancel selected"), "Stop the request selected in the list above").OnEvent("Click", PoolCancelSelected)
     pg.Add("Text", "xm y+12", "Test - sends this to Copilot and shows the answer:")
     pg.Add("Edit", "xm w380 h28 vTestPrompt", "Reply with only the word OK.")
-    pg.Add("Button", "x+8 w82 h28", "Send").OnEvent("Click", PoolTestSend)
+    TipAdd(pg.Add("Button", "x+8 w82 h28", "Send"), "Send the test text to Copilot; the answer shows below").OnEvent("Click", PoolTestSend)
     pg.Add("Edit", "xm w470 h70 ReadOnly vTestAnswer", "")
-    pg.Add("Button", "xm w110 h28", "Copy log").OnEvent("Click", PoolCopyLog)
-    pg.Add("Button", "x+8 w110 h28", "Settings file").OnEvent("Click", PoolOpenSettings)
-    pg.Add("Button", "x+8 w120 h28 vBtnViews", "Show the pages").OnEvent("Click", PoolToggleViews)
-    pg.Add("Button", "x+8 w106 h28", "Restart pool").OnEvent("Click", (*) => PoolRestart())
+    TipAdd(pg.Add("Button", "xm w110 h28", "Copy log"), "Copy the pool's recent log to the clipboard, to send when something's wrong (it never holds prompts or answers)").OnEvent("Click", PoolCopyLog)
+    TipAdd(pg.Add("Button", "x+8 w110 h28", "Settings file"), "Open the pool's settings file (for settings not in this window)").OnEvent("Click", PoolOpenSettings)
+    TipAdd(pg.Add("Button", "x+8 w120 h28 vBtnViews", "Show the pages"), "Show or hide the hidden Copilot pages (for troubleshooting)").OnEvent("Click", PoolToggleViews)
+    TipAdd(pg.Add("Button", "x+8 w106 h28", "Restart pool"), "Close the pool and start it again. Its Copilot windows close; you stay signed in.").OnEvent("Click", (*) => PoolRestart())
     pg.OnEvent("Close", (*) => pg.Hide())         ; keeps running; the Companion's tray opens it again
     pg.OnEvent("Escape", (*) => pg.Hide())
 }

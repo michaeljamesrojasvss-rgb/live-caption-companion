@@ -84,9 +84,9 @@ SvSetShow(*) {
     tabs.UseTab()
     g.Add("Button", "x10 y562 w100 h30 vSave Default", "Save").OnEvent("Click", (*) => SvSetSave(false))
     g.Add("Button", "x120 y562 w90 h30", "Cancel").OnEvent("Click", (*) => SvSetClose())
-    g.Add("Button", "x220 y562 w100 h30", "Defaults").OnEvent("Click", (*) => SvSetFill(true))
-    g.Add("Button", "x330 y562 w150 h30", "Try it (save + show)").OnEvent("Click", (*) => SvSetSave(true))
-    g.Add("Button", "x650 y562 w120 h30", "Settings file").OnEvent("Click", (*) => SvOpenSettings())
+    TipAdd(g.Add("Button", "x220 y562 w100 h30", "Defaults"), "Fill in the values the app ships with (on every tab). Nothing changes until Save.").OnEvent("Click", (*) => SvSetFill(true))
+    TipAdd(g.Add("Button", "x330 y562 w150 h30", "Try it (save + show)"), "Save, then show the highlights right away so you can see the result").OnEvent("Click", (*) => SvSetSave(true))
+    TipAdd(g.Add("Button", "x650 y562 w120 h30", "Settings file"), "Open the settings file itself (for anything not in this window)").OnEvent("Click", (*) => SvOpenSettings())
     g.Add("Text", "x10 y600 w760 h40 vStatus", "")
     g.OnEvent("Close", (*) => SvSetClose())
     g.OnEvent("Escape", (*) => SvSetClose())
@@ -104,7 +104,7 @@ SvSetAddField(g, f, y, &used) {
             g.Add("Text", "x" lx " y" (y + 6) " w110 h20", f.label)
             bx := lx + 115
             for name in SV_PRESET_ORDER {
-                g.Add("Button", "x" bx " y" y " w140 h30", name).OnEvent("Click", SvSetApplyPreset.Bind(name))
+                TipAdd(g.Add("Button", "x" bx " y" y " w140 h30", name), "Fill in a ready-made set of settings (also on the other tabs). Press Save to keep it.").OnEvent("Click", SvSetApplyPreset.Bind(name))
                 bx += 150
             }
             used := 46
@@ -116,7 +116,7 @@ SvSetAddField(g, f, y, &used) {
             g.Add("Text", "x" lx " y" (y + 3) " w720 h20", f.label)
             g.Add("Edit", "x" lx " y" (y + 26) " w" (f.type = "colors" ? 600 : 720) " h26 v" f.key)
             if (f.type = "colors")
-                g.Add("Button", "x" (lx + 610) " y" (y + 25) " w110 h28", "Add colour...").OnEvent("Click", SvSetAddColor.Bind(f.key))
+                TipAdd(g.Add("Button", "x" (lx + 610) " y" (y + 25) " w110 h28", "Add colour..."), "Pick a colour and add it to the end of the list").OnEvent("Click", SvSetAddColor.Bind(f.key))
             if (f.HasOwnProp("hint") && f.hint != "")
                 g.Add("Text", "x" lx " y" (y + 56) " w720 h20 cGray", f.hint)
             used := (f.HasOwnProp("hint") && f.hint != "") ? 84 : 64
@@ -134,7 +134,7 @@ SvSetAddField(g, f, y, &used) {
     }
     hx := cx + cw + 10
     if (f.type = "color") {
-        g.Add("Button", "x" hx " y" (y - 1) " w80 h28", "Pick...").OnEvent("Click", SvSetPickColor.Bind(f.key))
+        TipAdd(g.Add("Button", "x" hx " y" (y - 1) " w80 h28", "Pick..."), "Choose the colour from Windows' colour picker").OnEvent("Click", SvSetPickColor.Bind(f.key))
         hx += 90
     }
     if (f.HasOwnProp("hint") && f.hint != "")

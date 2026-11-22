@@ -11,6 +11,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include salesforce.ahk
 #Include caller-companion.ahk
 #Include q-alert.ahk
+#Include headset-check.ahk         ; headset check when you log back in to Q (off by default)
 #Include livecaption-tools.ahk
 #Include tutorial.ahk
 #Include copilot-assist.ahk
@@ -312,6 +313,7 @@ SetTimer(ReadCaption, 200)
 SetTimer(TrackSelection, 250)
 CallerInit()
 QAlertInit()
+HsInit()                           ; headset check (after QAlertInit: adds to its tray menu)
 LctInit()
 AssistInit()
 NotesResizeInit()
@@ -360,7 +362,7 @@ HandleExit(*) {
         OnMessage(0x0232, WindowMoveEnded, 0)
     }
     ; Each step on its own, so one failing can't skip saving the call
-    for step in [CallerShutdown, QAlertShutdown, MainHelperShutdown, SaLinkShutdown, AgtLinkShutdown, SvLinkShutdown, PoolLinkShutdown, SaveWindowPos, StopMicEngine, SaveNotes, FinishCurrentCall]
+    for step in [CallerShutdown, QAlertShutdown, HsShutdown, MainHelperShutdown, SaLinkShutdown, AgtLinkShutdown, SvLinkShutdown, PoolLinkShutdown, SaveWindowPos, StopMicEngine, SaveNotes, FinishCurrentCall]
         ErrRun(step)
     ErrLogShutdown()
 }

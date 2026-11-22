@@ -81,6 +81,16 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   Companion tray > Same value highlighter (`same-value-link.ahk`, `SvLink*`, [SameValue] Enabled; "Show now"
   while off starts it with `/once`). Settings window `same-value-settings.ahk` (`SvSet*`, built from one field
   list - a new setting = one entry + its default in `SV_DEFAULTS`), saved in `data\same-value.ini`. Design: `docs\SAME-VALUE.md`.
+- `app\headset-check.ahk` (`Hs*`) - **Headset check**, part of the Companion, uses the Q alert's watcher (q-watch runs while the Q alert OR this is on: `QAWatcherNeeded`/`QAWatcherSync`): when Q goes
+  off -> on (away >= MinAwaySec) it plays a sound and listens ListenSec through the mic (Windows wave-in, in memory
+  only, never a file; logs = levels/times only). An answer louder than ThresholdDb (its loudest moment by default, MinSoundMs=50) = headset on;
+  else a reminder toast at its own Position (same spot as the Q alert = Q toasts stack past it, `HsToastHeight`) (stays until "I'm wearing them" / "Check again"). Listening starts
+  after the sound ends, so the beep itself never counts. Strict mode (out of Q / a miss): check at log-in, re-check every
+  StrictEverySec (2 min) while the reminder shows; it has only "Check again" until a second miss adds "I'm wearing them".
+  Light mode (sure): next check LightEveryMin (10 min) after the last sign (answer, click, call). Never during a call. Calibrate window: quiet room, 3 answers (softest counts), optional
+  headset-on-the-desk, suggested level in the gap + slider. OFF by default, [HeadsetCheck] in live-captions.ini;
+  own Settings section "Headset check" (after "Q status", which holds the shared Q detection: live status + IntervalSec, then the Q-login alert) + tray > 3CX Q-login alert > Headset check. Mic failure = reminder shown.
+  It stops listening the moment it hears you and plays the sound again (AckOn, on by default) = "got it".
 - `app\companion-settings.ahk` (`CSet*`) - the Companion's **Settings window**: ⚙ next to 📍, and tray > Settings...
   Sections on the left, built from one field list (`CSetFields`: a new setting = one entry; types at the top of the
   file). The tray menu keeps all its items too (owner's choice), so both MUST use the same functions: a tick calls the

@@ -29,9 +29,17 @@
 CSET_SECTIONS := ["Calls && 3CX", "Q status", "Headset check", "Copilot", "Apps", "Captions && mic", "Updates && help", "Troubleshooting"]
 CSET_TRAY := "Settings..."
 CSET_TIPS_TRAY := "Show tips on buttons (all apps)"
-CSET_PX := 214                     ; where the page starts (right of the section list)
-CSET_PW := 640                     ; page width
+CSET_PAGE_X := 206                 ; the scrolling page (a child window) right of the section list
+CSET_PAGE_W := 674                 ; its width (room for the scroll bar)
+CSET_PAGE_H := 540                 ; its height (down to the line above Save / Close)
+CSET_PX := 8                       ; where the rows start, inside the page
+CSET_PW := 640                     ; row width
 cSetGui := 0
+cSetPage := 0                      ; the scrolling page inside cSetGui
+cSetSecH := Map()                  ; section -> its content height (DPI-scaled units)
+cSetScroll := 0                    ; how far the page is scrolled down (pixels)
+cSetContentPx := 0                 ; this section's content height (pixels)
+cSetPagePx := 0                    ; the page's visible height (pixels)
 cSetFieldList := []
 cSetSec := 1
 
@@ -41,6 +49,8 @@ CSetInit() {
         A_TrayMenu.Insert("1&", CSET_TIPS_TRAY, (*) => CSetTipsToggle())
         A_TrayMenu.Insert("1&", CSET_TRAY, (*) => CSetShow())
         CSetTipsSyncTray()
+        OnMessage(0x0115, CSetOnVScroll)         ; WM_VSCROLL: the page's scroll bar
+        OnMessage(0x020A, CSetOnWheel)           ; WM_MOUSEWHEEL over the page
     } catch as err {
         CSetReport(err)
     }
@@ -300,7 +310,7 @@ CSetOpenFile(path) {
 
 ; ------------------------------------------------------------------ the window
 CSetShow(*) {
-    global cSetGui, cSetFieldList, cSetSec
+    global cSetGui, cSetFieldList, cSetSec, cSetPage, cSetSecH, cSetScroll
     try {
         if IsObject(cSetGui) {
             if !CSetDirty()
@@ -318,6 +328,13 @@ CSetShow(*) {
             names.Push(StrReplace(s, "&&", "&"))
         list := g.Add("ListBox", "x12 y12 w186 h520 vSections Choose" cSetSec, names)
         list.OnEvent("Change", (ctl, *) => CSetShowSection(ctl.Value))
+        ; The page is its own child window with a vertical scroll bar: a section taller than the page
+        ; scrolls instead of running into the Save / Close bar (Copilot's last rows once were drawn over it)
+        pg := Gui("-Caption +Parent" g.Hwnd " +0x200000")       ; WS_VSCROLL
+        pg.SetFont("s10", "Segoe UI")
+        pg.OnEvent("Escape", (*) => CSetClose())
+        cSetPage := pg
+        cSetScroll := 0                          ; a new page starts at the top
         cSetFieldList := CSetFields()
         rowY := Map()
         for f in cSetFieldList {
@@ -325,10 +342,11 @@ CSetShow(*) {
             if (f.type = "head" && y > 12)
                 y += 8                           ; a little air above each heading but the first
             f.ctls := []
-            CSetAddField(g, f, y, &used)
+            CSetAddField(pg, f, y, &used)
             rowY[f.sec] := y + used
         }
-        g.Add("Text", "x12 y544 w836 h1 0x10")       ; a thin line above the buttons (SS_ETCHEDHORZ)
+        cSetSecH := rowY                         ; each section's content height (for the scroll bar)
+        g.Add("Text", "x12 y544 w856 h1 0x10")       ; a thin line above the buttons (SS_ETCHEDHORZ)
         b := g.Add("Button", "x12 y556 w100 h30 Default", "Save")
         b.OnEvent("Click", (*) => CSetSave())
         TipSet(b, "Apply the ticks and values you changed (the window stays open)")
@@ -338,17 +356,91 @@ CSetShow(*) {
         b := g.Add("Button", "x218 y556 w190 h30", "Defaults (this section)")
         b.OnEvent("Click", (*) => CSetDefaults())
         TipSet(b, "Fill in the values the app ships with, for this section only. Nothing changes until Save.")
-        g.Add("Text", "x420 y552 w428 h40 cGray vStatus", "Ticks and values apply when you press Save. Buttons act right away.")
+        g.Add("Text", "x420 y552 w448 h40 cGray vStatus", "Ticks and values apply when you press Save. Buttons act right away.")
         g.OnEvent("Close", (*) => !CSetClose())  ; true = keep the window (Cancel on the question)
         g.OnEvent("Escape", (*) => CSetClose())
         cSetGui := g
+        ; Show scales w / h for the screen's zoom (DPI) but not x / y: scale the place ourselves
+        pg.Show("x" Round(CSET_PAGE_X * A_ScreenDPI / 96) " y0 w" CSET_PAGE_W " h" CSET_PAGE_H " NA")
         CSetFill(false)
+        g.Show("w880 h600")
         CSetShowSection(cSetSec)
-        g.Show("w860 h600")
         CSetLiveTick()
         SetTimer(CSetLiveTick, 1000)             ; "live" rows (e.g. the Q status now) refresh every second
     } catch as err {
         CSetReport(err)
+    }
+}
+
+; ------------------------------------------------------------------ the page's scroll bar
+; Sets the scroll bar for the section on show (Windows hides it when the section fits)
+CSetScrollSetup() {
+    global cSetContentPx, cSetPagePx
+    try {
+        if !IsObject(cSetPage)
+            return
+        WinGetClientPos(, , , &ph, cSetPage.Hwnd)
+        cSetPagePx := ph
+        cSetContentPx := Round(((cSetSecH.Has(cSetSec) ? cSetSecH[cSetSec] : 0) + 12) * A_ScreenDPI / 96)
+        si := Buffer(28, 0)                      ; SCROLLINFO: range 0..content-1, page = visible height, pos 0
+        NumPut("UInt", 28, "UInt", 0x7, "Int", 0, "Int", cSetContentPx - 1, "UInt", cSetPagePx, "Int", 0, si)
+        DllCall("SetScrollInfo", "Ptr", cSetPage.Hwnd, "Int", 1, "Ptr", si, "Int", 1)   ; SB_VERT, redraw
+    }
+}
+
+; Scrolls the page so pixel row pos is at the top (kept within the content)
+CSetScrollTo(pos) {
+    global cSetScroll
+    try {
+        if !IsObject(cSetPage)
+            return
+        pos := Max(0, Min(Max(0, cSetContentPx - cSetPagePx), Round(pos)))
+        dy := cSetScroll - pos
+        if !dy
+            return
+        DllCall("ScrollWindow", "Ptr", cSetPage.Hwnd, "Int", 0, "Int", dy, "Ptr", 0, "Ptr", 0)   ; moves every row
+        cSetScroll := pos
+        DllCall("SetScrollPos", "Ptr", cSetPage.Hwnd, "Int", 1, "Int", pos, "Int", 1)
+        DllCall("RedrawWindow", "Ptr", cSetPage.Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x1 | 0x4 | 0x80 | 0x100)
+    }
+}
+
+; WM_VSCROLL: arrows, clicks and dragging on the page's own scroll bar
+CSetOnVScroll(wParam, lParam, msg, hwnd) {
+    if (!IsObject(cSetPage) || hwnd != cSetPage.Hwnd || lParam)
+        return
+    line := Round(30 * A_ScreenDPI / 96)
+    switch wParam & 0xFFFF {
+        case 0: p := cSetScroll - line           ; SB_LINEUP
+        case 1: p := cSetScroll + line           ; SB_LINEDOWN
+        case 2: p := cSetScroll - cSetPagePx     ; SB_PAGEUP
+        case 3: p := cSetScroll + cSetPagePx     ; SB_PAGEDOWN
+        case 4, 5: p := (wParam >> 16) & 0xFFFF  ; SB_THUMBPOSITION / SB_THUMBTRACK
+        case 6: p := 0                           ; SB_TOP
+        case 7: p := cSetContentPx               ; SB_BOTTOM
+        default: return 0
+    }
+    CSetScrollTo(p)
+    return 0
+}
+
+; WM_MOUSEWHEEL with the mouse over the page scrolls it (a multi-line text box scrolls itself)
+CSetOnWheel(wParam, lParam, msg, hwnd) {
+    if (!IsObject(cSetPage) || cSetContentPx <= cSetPagePx)
+        return
+    try {
+        MouseGetPos(, , &win, &under, 2)
+        if (win != cSetGui.Hwnd)
+            return
+        if !(under = cSetPage.Hwnd || DllCall("IsChild", "Ptr", cSetPage.Hwnd, "Ptr", under))
+            return
+        if (WinGetClass("ahk_id " under) = "Edit" && (WinGetStyle("ahk_id " under) & 0x4))   ; ES_MULTILINE
+            return
+        d := (wParam >> 16) & 0xFFFF
+        if (d > 0x7FFF)
+            d -= 0x10000
+        CSetScrollTo(cSetScroll - Round(d / 120 * 60 * A_ScreenDPI / 96))
+        return 0
     }
 }
 
@@ -456,11 +548,13 @@ CSetButtonW(label) => Max(90, StrLen(StrReplace(label, "&&", "&")) * 8 + 24)
 CSetShowSection(i) {
     global cSetSec
     try {
+        CSetScrollTo(0)                          ; back to the top before switching (all rows move together)
         cSetSec := i
         for f in cSetFieldList
             for c in f.ctls
                 c.Visible := (f.sec = i)
         try IniWrite(i, MIC_INI, "Settings", "LastSection")
+        CSetScrollSetup()
         SetTimer(() => (IsObject(cSetGui) ? RepaintWindow(cSetGui.Hwnd) : 0), -60)
     } catch as err {
         CSetReport(err)
@@ -635,7 +729,7 @@ CSetSave() {
 
 ; Closes the window; asks first if something isn't saved. False = stay open (Cancel).
 CSetClose() {
-    global cSetGui
+    global cSetGui, cSetPage, cSetScroll
     try {
         if !IsObject(cSetGui)
             return true
@@ -652,6 +746,8 @@ CSetClose() {
         CSetReport(err)
     }
     cSetGui := 0
+    cSetPage := 0
+    cSetScroll := 0
     return true
 }
 

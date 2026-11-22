@@ -97,6 +97,8 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   module's own toggle (`CallerToggle`, `PoolLinkToggle`, ...) so tray ticks follow; values use the module's setter.
   Save applies only fields changed in the window (a tray change made meanwhile is kept). A new Companion setting goes
   in both places: its module's tray item + one `CSetFields` entry. Other apps keep their own settings windows.
+  The rows sit on a scrolling page (a child Gui `cSetPage`, WS_VSCROLL + wheel, `CSetScroll*`): a section taller than the page
+  scrolls instead of being drawn over the Save / Close bar. Rows are added to the page, not to `cSetGui`.
 - `app\tooltips.ahk` (`Tip*`) - **hover tips**, shared by every app (include it after `app-paths.ahk`): `TipSet(ctl, text)`
   ("" removes; call again to change, e.g. a state), `TipAdd(ctl, text)` returns ctl for one-liners
   (`TipAdd(g.Add(...), "tip").OnEvent(...)` - keep it on ONE line, a line starting with `.OnEvent` is not chaining).

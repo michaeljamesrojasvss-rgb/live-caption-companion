@@ -15,3 +15,5 @@ tools/dev/*.txt
 # Speech engine for mic captions - large, and not shipped for now
 whisper/
 app/whisper/
+tools/dev/**/*.txt
+tools/dev/edge-bridge-probe/host/*.json

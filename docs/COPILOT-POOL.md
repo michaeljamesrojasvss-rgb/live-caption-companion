@@ -240,3 +240,22 @@ Redesigned 2026-11-20 (owner): the combined "Live helpers" board window and its 
 3. ➤ Ask / ⚡ auto-assist: **not touched** for now.
 4. **Work account only**; personal = gmail.com-style domains; a testing switch for home.
 5. Workmates: **on by default** once proven.
+
+## Your own Edge instead of the built-in browser (planned 2026-11-22, probe stage)
+
+Owner's wish: the pool (and later the Agent's browser tool) uses the person's REAL Edge, as if it opened a
+new tab: their sign-ins, cookies, sessions and history. Decisions (owner, 2026-11-22): Edge first (Chrome
+later, same extension); keep the built-in WebView2 pool with a switch (Settings > Copilot: built-in browser /
+my Edge); link = native messaging; pool first, Agent after.
+
+- Why an extension: WebView2 can't attach to a running Edge or use its profile (locked, cookies encrypted for
+  Edge only), and Chrome/Edge 136+ ignore `--remote-debugging-port` on the normal profile. An extension inside
+  the person's Edge is the only way into their own sessions.
+- Link: native messaging, registered per user (HKCU\Software\Microsoft\Edge\NativeMessagingHosts\...), no
+  admin, no network port. The browser starts the host (a .bat -> AutoHotkey script on stdin/stdout); the host
+  relays to the pool.
+- Risks to check on the work PC: policies blocking self-loaded extensions / Developer mode / user-level native
+  hosts; background tabs being slowed (the old automation-extension pool coped with this); workmates need the
+  extension (hence the switch). The Agent in the real browser acts as the person everywhere they're signed in.
+- Probe: `tools\dev\edge-bridge-probe\` (setup window with a policy report, extension, host). It only reads
+  pages (title, address, message box, visibility), never types or sends.

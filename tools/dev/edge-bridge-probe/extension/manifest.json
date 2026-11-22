@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Caption Companion bridge (probe)",
+  "version": "0.1",
+  "description": "Dev probe: can the Caption Companion talk to this browser (native messaging) and use Copilot in your own tabs?",
+  "permissions": ["nativeMessaging", "tabs", "scripting", "storage"],
+  "host_permissions": [
+    "https://m365.cloud.microsoft/*",
+    "https://copilot.cloud.microsoft/*",
+    "https://www.google.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Caption Companion bridge probe: click to connect" }
+}

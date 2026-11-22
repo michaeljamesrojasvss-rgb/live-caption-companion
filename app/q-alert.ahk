@@ -10,8 +10,11 @@
 ;       - Toast duration, Max toasts at once (they stack), Check every N seconds
 ;         (each has presets and Custom...)
 ;     Stored in data\live-captions.ini, section [QAlert]:
-;       Enabled=1  Position=Bottom right  ToastSeconds=5  MaxToasts=3  IntervalSec=10
+;       Enabled=1  Position=Bottom right  ToastSeconds=5  MaxToasts=3  IntervalSec=10  SnoozeMinutes=5
 ;       ElementId= / ElementName= / MinBlue=   (see q-watch.ahk)
+;   * Snooze: every toast has a "Snooze N min" button (also tray > 3CX Q-login alert > Snooze the alert now)
+;     for extra after-call work: no Q toasts for SnoozeMinutes (default 5). It ends by itself, or at once with
+;     "Alert back on now". A snooze isn't saved: closing the Companion ends it.
 ;   * Toasts never take focus; clicking one closes it.
 ;   * Nothing here clicks or types into 3CX.
 ; Hooks called from liveCaptionCompanion.ahk: QAlertInit(), QAlertShutdown()
@@ -19,14 +22,18 @@
 
 QA_TAG := 0x3CC1
 QA_ITEM_ON := "Alert when 3CX is not open or not logged in to Q"
+QA_ITEM_SNOOZE := "Snooze the alert now (extra after-call work)"
+QA_ITEM_RESUME := "Alert back on now"
 QA_POSITIONS := ["Top left", "Top center", "Top right", "Bottom left", "Bottom center", "Bottom right", "Near the 3CX window"]
 QA_DEFAULT_POS := "Bottom right"
 ; key -> [menu title, preset values, unit label, default, min, max]
 QA_CHOICES := Map(
     "ToastSeconds", ["Toast duration", [3, 5, 10, 15, 30], "seconds", 5, 2, 300],
     "MaxToasts",    ["Max toasts at once", [1, 2, 3, 5, 10], "", 3, 1, 10],
-    "IntervalSec",  ["Check every", [5, 10, 15, 30, 60], "seconds", 10, 3, 3600])
+    "IntervalSec",  ["Check every", [5, 10, 15, 30, 60], "seconds", 10, 3, 3600],
+    "SnoozeMinutes", ["Snooze length", [2, 5, 10, 15, 30], "minutes", 5, 1, 120])
 qaWatchPid := 0
+qaSnoozeUntil := 0              ; A_TickCount until which the alert is snoozed (0 = not snoozed)
 qaToasts := []
 qaMenu := ""
 qaPosMenu := ""
@@ -70,9 +77,11 @@ QABuildMenu() {
         qaPosMenu.Add(p, QAPickPosition)
     m := Menu()
     m.Add(QA_ITEM_ON, QAToggle)
+    m.Add(QA_ITEM_SNOOZE, QASnooze)
+    m.Add(QA_ITEM_RESUME, QAResume)
     m.Add()
     m.Add("Toast position", qaPosMenu)
-    for key in ["ToastSeconds", "MaxToasts", "IntervalSec"]
+    for key in ["ToastSeconds", "MaxToasts", "IntervalSec", "SnoozeMinutes"]
         QAAddChoice(m, key)
     m.Add()
     m.Add("Show a test toast", (*) => QAShowToast(true))
@@ -105,6 +114,10 @@ QASyncMenu() {
         qaMenu.Check(QA_ITEM_ON)
     else
         qaMenu.Uncheck(QA_ITEM_ON)
+    if QASnoozed()
+        qaMenu.Enable(QA_ITEM_RESUME)
+    else
+        qaMenu.Disable(QA_ITEM_RESUME)
     cur := QAlertSetting("Position", QA_DEFAULT_POS)
     for p in QA_POSITIONS {
         if (p = cur)
@@ -127,6 +140,37 @@ QASyncMenu() {
         else
             sub.Check("Custom…")
     }
+}
+
+; ------------------------------------------------------------------ snooze (extra after-call work)
+QASnoozed() => (qaSnoozeUntil && A_TickCount < qaSnoozeUntil)
+
+QASnooze(*) {
+    global qaSnoozeUntil
+    mins := QAInt("SnoozeMinutes")
+    qaSnoozeUntil := A_TickCount + mins * 60000
+    SetTimer(QASnoozeEnded, -mins * 60000)
+    QAHideAll()
+    QASyncMenu()
+    try statusText.Text := "Status: 3CX Q alert snoozed for " mins " min (tray > 3CX Q-login alert > Alert back on now)"
+    QALog("snoozed for " mins " min")
+}
+
+QAResume(*) {
+    global qaSnoozeUntil
+    qaSnoozeUntil := 0
+    SetTimer(QASnoozeEnded, 0)
+    QASyncMenu()
+    try statusText.Text := "Status: 3CX Q alert is back on"
+    QALog("snooze ended by hand")
+}
+
+QASnoozeEnded() {
+    global qaSnoozeUntil
+    qaSnoozeUntil := 0
+    QASyncMenu()
+    try statusText.Text := "Status: 3CX Q alert is back on"
+    QALog("snooze ended")
 }
 
 QAToggle(*) {
@@ -198,6 +242,10 @@ QAHandle(text, *) {
             QAHideAll()
             return
         }
+        if ((p[2] = "off" || p[2] = "no3cx") && QASnoozed()) {
+            QAHideAll()                          ; snoozed: the next check after the snooze brings it back
+            return
+        }
         if (p[2] = "off")
             QAShowToast(false, "⚠ 3CX is not logged in to Q")
         else if (p[2] = "no3cx")                 ; 3CX must always be open during work
@@ -213,7 +261,7 @@ QAHandle(text, *) {
 ; ------------------------------------------------------------------ toasts (stack, newest at the screen edge)
 QAShowToast(isTest, title := "", hint := "Open 3CX and log in to the queue.") {
     s := A_ScreenDPI / 96
-    w := Round(330 * s)
+    w := Round(410 * s)
     h := Round(64 * s)
     if (!isTest && StrLen(title) > 34)          ; a longer warning: two lines for the title
         h := Round(84 * s)
@@ -221,9 +269,12 @@ QAShowToast(isTest, title := "", hint := "Open 3CX and log in to the queue.") {
     g.BackColor := "3B1219"
     g.SetFont("s11 cFECACA", "Segoe UI")
     t := FormatTime(, "h:mm:ss tt")
-    txt := g.Add("Text", Format("x{} y{} w{} h{} +0x100", Round(12 * s), Round(10 * s), w - Round(24 * s), h - Round(20 * s))
+    txt := g.Add("Text", Format("x{} y{} w{} h{} +0x100", Round(12 * s), Round(10 * s), w - Round(24 * s) - Round(104 * s), h - Round(20 * s))
         , isTest ? "Test toast (" t ")`nClick to close, right-click for settings."
                  : title "  (" t ")`n" hint)
+    snz := g.Add("Button", Format("x{} y{} w{} h{}", w - Round(12 * s) - Round(92 * s), (h - Round(34 * s)) // 2, Round(92 * s), Round(34 * s))
+        , "Snooze " QAInt("SnoozeMinutes") " min")
+    snz.OnEvent("Click", (*) => QASnooze())      ; (the toast never takes focus: typing isn't disturbed)
     item := Map("gui", g, "w", w, "h", h)
     item["timer"] := QARemoveToast.Bind(item)
     txt.OnEvent("Click", item["timer"])

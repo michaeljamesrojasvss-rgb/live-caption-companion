@@ -85,8 +85,10 @@ CSetFields() {
     f.Push(CSetQaNum("ToastSeconds", "How long each alert stays before it closes by itself"))
     f.Push(CSetQaNum("MaxToasts", "Most alerts on the screen at once; the oldest closes when a new one comes"))
     f.Push(CSetQaNum("IntervalSec", "How often 3CX and its Q login are checked"))
+    f.Push(CSetQaNum("SnoozeMinutes", "How long the alert's Snooze button silences it (for extra after-call work)"))
     f.Push({sec: 1, type: "buttons", items: [["Show a test alert", () => QAShowToast(true)
-        , "Show an alert now, to see where and how it appears"]]})
+        , "Show an alert now, to see where and how it appears"]
+        , ["Snooze the alert now", () => QASnooze(), "Silence the Q alert for the snooze length above; it comes back by itself"]]})
 
     ; ---- 2  Copilot
     f.Push({sec: 2, type: "head", label: "Copilot pool (the 💬 and ^ buttons beside the helpers)"})

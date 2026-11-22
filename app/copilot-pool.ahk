@@ -1862,7 +1862,7 @@ PoolMemAudit() {
         for v in views {
             if v.dead
                 continue
-            idle := !v.held && v.jobId = "" && now - v.lastUse > PoolNum("IdleLowMemSec") * 1000
+            idle := !v.held && v.jobId = "" && !v.reserved && now - v.lastUse > PoolNum("IdleLowMemSec") * 1000   ; an app's own reserved page stays warm (Screen ask: a low-memory page was slow to wake)
             PoolMemLevel(v, idle ? 1 : 0)
             try v.wv.PostWebMessageAsString('{"t":"mem"}')       ; the page answers with its size (next audit uses it)
         }

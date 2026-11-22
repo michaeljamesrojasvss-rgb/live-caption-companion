@@ -2,16 +2,23 @@
 ; updates.ahk  -  "an update is available" for Live Caption Companion
 ;
 ; What the agent sees
-;   * Nothing, until a newer version is published. Then a small "⬆ Update" pill
-;     appears top-right; clicking it shows what's new and an Update now button.
+;   * Nothing, until a newer version is published. It is then downloaded in the
+;     background (still nothing on screen). When it's ready and it's a quiet moment
+;     (no call, no captions for a minute) a small "Update ready" box asks:
+;     Restart now / Ask me later (RemindMinutes, default 10). Later = it asks again
+;     after that long. The "⬆ Update" pill top-right stays and opens the full dialog.
+;   * The update can't be skipped: when the app is opened and a newer version is
+;     there (or found in the first minutes), it installs by itself, no question.
 ;   * Tray menu > Updates: version, Check for updates, Set update link, Go
 ;     back to the previous version, Open data folder, Open update log.
 ;
 ; Safety rules - the core app must never depend on this file working:
 ;   * All network and file work runs in updater.ahk, a separate process. A slow
 ;     or blocked network can't freeze captions.
-;   * Nothing installs by itself: only Update now does, and never while 3CX
-;     shows a ringing or live call.
+;   * Nothing installs while 3CX shows a ringing or live call, or captions came in
+;     during the last minute. Installing by itself (AutoUpdate=1, the default) only
+;     happens when the app is opened; while it's open the person chooses (Restart now).
+;     A failed install is never retried by itself within 30 minutes (no restart loops).
 ;   * The call is saved before the companion closes; the previous version is
 ;     kept in app.old for "Go back".
 ;   * Only a copy installed by Setup updates itself, so your repo is never
@@ -22,7 +29,8 @@
 
 UPD_DIR := DATA_DIR "\update"
 UPD_LOG := UPD_DIR "\update.log"
-UPD_DEFAULTS := Map("ManifestUrl", "", "CheckHours", 3)
+UPD_DEFAULTS := Map("ManifestUrl", "", "CheckHours", 3, "AutoUpdate", 1, "RemindMinutes", 10)
+UPD_AUTO_INI := UPD_DIR "\auto.ini"      ; [Auto] LastTry = when the app last installed an update by itself
 UPD_PILL_W := 84
 
 updPill := ""
@@ -31,6 +39,12 @@ updTrayMenu := ""
 updProc := {pid: 0, kind: "", manual: false, started: 0}
 updLatest := ""             ; Map from status.json when a newer version exists
 updDlg := ""                ; {gui, status, btnUpdate} while the dialog is open
+updPrompt := ""             ; {gui, note} while the "Update ready" box is open
+updAutoDl := false          ; the running download was started by the app itself (background)
+updDlFailAt := 0            ; a background download failed: try again after a while
+updStartup := true          ; the first minutes after opening: a newer version installs without asking
+updForce := false           ; an update is to be installed by itself, waiting for a quiet moment
+updRemindAt := 0            ; "Ask me later": don't show the box before this A_TickCount
 
 ; ==============================================================================
 ; Hooks called from liveCaptionCompanion.ahk
@@ -45,6 +59,9 @@ UpdInit() {
         UpdApplyStatus(PkgReadJson(UPD_DIR "\status.json"))    ; result of the last check
         SetTimer(() => UpdStartCheck(false), -1)               ; every start: check right away, once startup is done (non-blocking: runs in updater.ahk)
         SetTimer(UpdAutoCheck, -30 * 60 * 1000)                ; then every CheckHours while it stays open
+        SetTimer(UpdStartupApply, -3000)                       ; an update already downloaded: installs now, no question
+        SetTimer(UpdEndStartup, -5 * 60 * 1000)
+        SetTimer(UpdTick, -30000)                              ; background download + the "Update ready" box
     } catch as err {
         UpdReport(err, "start")
     }
@@ -216,6 +233,8 @@ UpdAfterCheck(manual) {
         return
     }
     UpdApplyStatus(st)
+    if (!manual && IsObject(updLatest))
+        UpdAutoDownload()
     if !manual
         return
     if IsObject(updLatest)
@@ -230,6 +249,175 @@ UpdApplyStatus(st) {
     newer := (st is Map) && st.Get("ok", 0) && PkgCompareVersions(st["latest"], APP_VERSION) > 0
     updLatest := newer ? st : ""
     UpdShowPill(newer)
+}
+
+; ==============================================================================
+; Automatic update: download in the background, ask to restart, install on open
+; ==============================================================================
+UpdAutoOn() => (UpdSetting("AutoUpdate") != "0")
+
+UpdRemindMins() {
+    n := 10
+    try n := Integer(UpdSetting("RemindMinutes"))
+    return Max(1, n)
+}
+
+; A quiet moment: no ringing / live call and no captions in the last minute
+UpdIdle() => !UpdCallInProgress() && !(lastChatTick && A_TickCount - lastChatTick < 60000)
+
+; Is a downloaded update waiting? With a version: that one. Without: any newer than this copy.
+UpdPendingFor(ver := "") {
+    dl := PkgReadJson(UPD_DIR "\download.json")
+    if !(dl is Map) || !dl.Get("ok", 0) || !FileExist(dl.Get("appDir", "") "\" PKG_MAIN_SCRIPT)
+        return false
+    return (ver = "") ? (PkgCompareVersions(dl["version"], APP_VERSION) > 0) : (dl["version"] = ver)
+}
+
+UpdRecentAutoTry() {
+    t := ""
+    try t := IniRead(UPD_AUTO_INI, "Auto", "LastTry", "")
+    return IsInteger(t) && DateDiff(A_Now, t, "Minutes") < 30
+}
+
+UpdEndStartup() {
+    global updStartup
+    updStartup := false
+}
+
+; Newer version known: fetch it quietly (the updater runs in its own process, captions never wait)
+UpdAutoDownload() {
+    global updAutoDl
+    if !UpdAutoOn() || !AppIsInstalled() || !IsObject(updLatest)
+        return
+    if UpdPendingFor(updLatest["latest"]) {
+        UpdOnReady()
+        return
+    }
+    if (updDlFailAt && A_TickCount - updDlFailAt < 30 * 60 * 1000)
+        return
+    if UpdRunUpdater("download", [UPD_DIR]) {
+        updAutoDl := true
+        UpdLog("downloading version " updLatest["latest"] " in the background")
+    }
+}
+
+; The update is downloaded. Just opened = install it now; otherwise ask when it's a quiet moment.
+UpdOnReady() {
+    global updForce
+    if updStartup {
+        updForce := true
+        UpdLog("update ready right after opening - it installs by itself")
+    }
+    UpdTick()
+}
+
+; Every 30 s: retry a download, install-by-itself, or show the "Update ready" box
+UpdTick() {
+    global updForce
+    try {
+        if (updForce && !UpdPendingFor(""))
+            updForce := false                     ; nothing downloaded after all: back to the normal way
+        if (updForce && AppIsInstalled() && UpdIdle()) {
+            UpdForceApply()
+        } else if (!updForce && AppIsInstalled() && UpdAutoOn() && IsObject(updLatest) && !IsObject(updPrompt)) {
+            if !UpdPendingFor(updLatest["latest"])
+                UpdAutoDownload()
+            else if (A_TickCount >= updRemindAt && UpdIdle())
+                UpdShowPrompt()
+        }
+    } catch as err {
+        UpdReport(err, "auto")
+    }
+    SetTimer(UpdTick, -30000)
+}
+
+; At every start: a downloaded newer version is installed now (the app is only just open: nothing to lose).
+UpdStartupApply() {
+    global updForce
+    if !UpdAutoOn() || !AppIsInstalled() || !UpdPendingFor("")
+        return
+    if UpdRecentAutoTry() {
+        UpdLog("an update is waiting but one was tried in the last 30 minutes - not installing it by itself again yet")
+        return
+    }
+    updForce := true
+    UpdTick()
+}
+
+UpdForceApply() {
+    global updForce
+    updForce := false
+    UpdClosePrompt()
+    UpdCloseDialog()
+    ver := ""
+    try ver := PkgReadJson(UPD_DIR "\download.json")["version"]
+    try IniWrite(A_Now, UPD_AUTO_INI, "Auto", "LastTry")
+    UpdLog("installing version " ver " by itself (the app was just opened)")
+    try TrayTip("Installing the update (version " ver ") - reopening in a few seconds...", "Live Caption Companion", "Iconi Mute")
+    UpdInstallAndRestart("apply")
+}
+
+; "Update ready": Restart now / Ask me later. Never takes the keyboard focus and has no default button,
+; so typing during a call can't press it by accident.
+UpdShowPrompt() {
+    global updPrompt
+    if IsObject(updPrompt) || !IsObject(updLatest)
+        return
+    mins := UpdRemindMins()
+    g := Gui("+AlwaysOnTop -MinimizeBox -MaximizeBox", "Update ready")
+    g.BackColor := "11151D"
+    g.SetFont("s12 bold cF1F5FB", "Segoe UI")
+    g.Add("Text", "w380", "Update ready: version " updLatest["latest"])
+    g.SetFont("s10 norm c9BA8BA")
+    g.Add("Text", "w380", "Restart to finish updating. Your call, helpers and settings are saved and kept. "
+        . "If you wait, it installs by itself the next time you open the app.")
+    note := g.Add("Text", "w380 h20 cFBBF24", "")
+    btnNow := g.Add("Button", "w150", "Restart now")
+    btnLater := g.Add("Button", "x+10 w190", "Ask me later (" mins " min)")
+    TipSetAll([[btnNow, "Close the Companion and reopen it with the new version (a few seconds; your calls, helpers and settings are kept)"],
+        [btnLater, "Not now: this box comes back in " mins " minutes. Opening the app later installs the update anyway"]])
+    btnNow.OnEvent("Click", UpdSafe(UpdPromptRestart))
+    btnLater.OnEvent("Click", UpdSafe(UpdPromptLater))
+    g.OnEvent("Close", UpdSafe(UpdPromptLater))
+    g.OnEvent("Escape", UpdSafe(UpdPromptLater))
+    updPrompt := {gui: g, note: note}
+    g.Show("Hide AutoSize")
+    g.GetPos(, , &w, &h)
+    MonitorGetWorkArea(MonitorGetPrimary(), &l, &t, &r, &b)
+    g.Show("NoActivate x" (r - w - 16) " y" (b - h - 16))
+    UpdLog("showed the Update ready box (version " updLatest["latest"] ")")
+}
+
+UpdClosePrompt() {
+    global updPrompt
+    if IsObject(updPrompt)
+        try updPrompt.gui.Destroy()
+    updPrompt := ""
+}
+
+UpdPromptRestart() {
+    if UpdCallInProgress() {
+        if IsObject(updPrompt)
+            updPrompt.note.Text := "3CX shows a call - finish it first."
+        return
+    }
+    if !UpdPendingFor(IsObject(updLatest) ? updLatest["latest"] : "") {   ; the download went missing: fetch it again
+        UpdClosePrompt()
+        UpdAutoDownload()
+        return
+    }
+    UpdClosePrompt()
+    UpdLog("Restart now clicked")
+    UpdInstallAndRestart("apply")
+}
+
+UpdPromptLater() {
+    global updRemindAt
+    mins := UpdRemindMins()
+    updRemindAt := A_TickCount + mins * 60000
+    UpdClosePrompt()
+    statusText.Text := "Status: update ready - I'll ask again in " mins " min (it also installs when you reopen the app)"
+    UpdLog("Ask me later: asking again in " mins " min")
 }
 
 ; ==============================================================================
@@ -312,7 +500,20 @@ UpdBeginUpdate() {
 }
 
 UpdAfterDownload() {
+    global updAutoDl, updDlFailAt
+    auto := updAutoDl
+    updAutoDl := false
     dl := PkgReadJson(UPD_DIR "\download.json")
+    if (auto && !IsObject(updDlg)) {              ; started by the app itself, nobody clicked anything
+        if (dl is Map) && dl.Get("ok", 0) {
+            UpdLog("downloaded in the background: version " dl["version"])
+            UpdOnReady()
+        } else {
+            updDlFailAt := A_TickCount
+            UpdLog("background download FAILED: " ((dl is Map) ? dl["error"] : "no answer from the updater"))
+        }
+        return
+    }
     if !(dl is Map) || !dl.Get("ok", 0) {
         why := (dl is Map) ? dl["error"] : "no answer from the updater"
         UpdDialogStatus("Download failed: " why, true)

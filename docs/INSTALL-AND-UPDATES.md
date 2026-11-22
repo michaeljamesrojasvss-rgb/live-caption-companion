@@ -35,13 +35,26 @@ Push to `main`. If the push changes `app/`, `installer/`, `runtime/` or `tools/r
 (`.github/workflows/release.yml`) builds the zip and publishes a GitHub Release named like `2026.11.02.0725`
 (date and time in Manila). Installed copies check
 `https://github.com/michaeljamesrojasvss-rgb/live-caption-companion/releases/latest/download/version.json`
-and show the blue **Update** button; nobody is updated until they click it.
+and show the blue **Update** button. They also update by themselves (see "Automatic update" below).
 
 - "What's new" comes from commit messages: every line starting with `Release-note:` is used (write them for
   workmates, in plain language). With none, the commit subjects are used.
 - New coworkers get `.../releases/latest/download/CaptionCompanion.zip` (always the newest).
 - Re-run a failed release from the repo's **Actions** tab > Release > Run workflow.
 - `app\version.txt` in the repo is no longer updated; the build writes the real version into the zip only.
+
+## Automatic update (installed copies)
+
+- A newer version is **downloaded in the background** as soon as it's found (nothing on screen).
+- When it's ready and it's a quiet moment (no ringing/live 3CX call, no captions for a minute) a small
+  **Update ready** box appears bottom-right: **Restart now** / **Ask me later (10 min)**. It doesn't take the keyboard
+  focus and has no default button, so typing can't press it by accident. Later = it comes back after `RemindMinutes`.
+- **It can't be skipped:** every time the app is opened, an update that is already downloaded installs right away
+  without asking, and one found in the first 5 minutes after opening is downloaded and installed the same way
+  (it waits for a call to end). If an install fails, it isn't forced again for 30 minutes (no restart loops).
+- Settings (`app.ini` or `data\live-captions.ini`, `[Update]`): `AutoUpdate=0` turns all of this off (back to the
+  Update button only), `RemindMinutes=10`. A repo copy never installs by itself.
+- Code: `app\updates.ahk` (`UpdTick`, `UpdShowPrompt`, `UpdStartupApply`), state in `data\update\auto.ini`.
 
 ## Every release, by hand (old way, Drive)
 

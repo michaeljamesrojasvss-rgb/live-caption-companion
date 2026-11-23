@@ -60,6 +60,13 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 ;                 message before the prompt; all or nothing - if one can't be attached it comes back unsent.
 ;                 Read when the request arrives: the app may delete the files once it has "done".
 ;                 Sites without "images" in their chat-sites file refuse them (unsent).)
+;                (hold: prepare it now, send it later - the page starts the new chat and attaches the images, then
+;                 waits (up to 4 min) without sending; {t:"release", id, prompt} brings the prompt and it goes at
+;                 once. The prompt may be empty until then. With show, the window appears at "release".
+;                 Cancelled while held = nothing was sent; the page shows the chat it had before again.)
+;                (preempt: with conversation - if that conversation's previous answer is still being written, it is
+;                 stopped (its request ends "replaced") and this one goes at once instead of waiting for it)
+;                {t:"release", id, prompt}
 ;                {t:"cancel", id}   {t:"end", conversation}   {t:"status", hwnd}
 ;                {t:"tab", id, hwnd, owner, tab, op, args} -> {t:"tab-done", id, ok, text, image, error}: a normal
 ;                  browser tab an app drives (the Agent) - see copilot-pool-browser.ahk
@@ -657,6 +664,8 @@ PoolOnViewMessage(v, raw) {
             ; that loads a new page when it sends): its script carries the job on - nothing is lost
             if (!isSignin && v.jobId != "" && m.Get("resume", "") = v.jobId) {
                 DbgTrace("pool", PoolViewName(v) ": page reloaded during job " v.jobId " - the job carries on")
+                if (reqs.Has(v.reqId) && reqs[v.reqId].hold && reqs[v.reqId].released)
+                    PoolSendGo(v, reqs[v.reqId])         ; a held job's prompt may have gone to the old page: again (taken once)
                 return
             }
             if !isSignin
@@ -977,6 +986,9 @@ PoolNewRequest(m, hwnd) {
         orNew: m.Get("orNew", 0) ? true : false,     ; a follow-up whose conversation is gone may start a new one (it carries the full prompt)
         respectDraft: m.Get("respectDraft", 0) ? true : false,   ; an automatic prompt: never replaces text you typed in the box
         quiet: m.Get("quiet", 0) ? true : false,   ; show: the window opens without taking the focus (an app opened it by itself)
+        hold: m.Get("hold", 0) ? true : false,     ; prepared now, its prompt comes with "release"
+        preempt: m.Get("preempt", 0) ? true : false,   ; stops its conversation's answer still being written
+        released: false,
         queuedAt: A_TickCount, startedAt: 0, sent: false, status: "waiting", view: 0, logName: "#" jobSeq, warm: false,
         tick: IsInteger(m.Get("tick", 0)) ? m.Get("tick", 0) : 0, waitWhy: "", sentAt: 0,
         imgPaths: (m.Get("images", "") is Array) ? m.Get("images") : [], images: [], imgBytes: 0 }
@@ -1044,7 +1056,7 @@ PoolB64(buf) {
 }
 
 PoolAsk(r) {
-    if (Trim(r.prompt, " `t`r`n") = "") {
+    if (!r.hold && Trim(r.prompt, " `t`r`n") = "") {
         PoolFinish(r, false, "unsent", "the prompt is empty", , , , false)
         return
     }
@@ -1169,6 +1181,10 @@ PoolPickView(r, &lost) {
                 ; only warming up (e.g. an app's own page): the real prompt replaces the warm-up (PoolRun)
                 if (v.jobId != "" && reqs.Has(v.reqId) && reqs[v.reqId].warm)
                     return v
+                ; preempt: the previous answer in this conversation is still being written - it's stopped and
+                ; this one goes now (only once that one is IN: a question not sent yet is never dropped)
+                if (r.preempt && v.jobId != "" && reqs.Has(v.reqId) && reqs[v.reqId].sent)
+                    return v
                 return 0
             }
             convs.Delete(r.conv)
@@ -1255,14 +1271,16 @@ PoolRun(r, v) {
         "scroll", (v.held && !r.warm) ? 1 : 0,          ; your 💬 window follows the newest answer
         "respectDraft", (r.HasOwnProp("respectDraft") && r.respectDraft) ? 1 : 0,
         "images", r.HasOwnProp("images") ? r.images.Length : 0,   ; the page asks for them ("images-get")
+        "hold", r.hold ? 1 : 0,                         ; prepared now, the prompt comes with "go" (PoolRelease)
         "preempt", preempt ? 1 : 0)
     PoolMemLevel(v, 0)                           ; working: full speed
     try {
         v.wv.PostWebMessageAsString(Json.Stringify(job))
         PoolLog("request " r.logName " -> view " v.id (r.show ? " (shown as a window)" : "") (preempt ? " (replacing)" : ""))
         DbgTrace("pool", "request " r.logName " -> " PoolViewName(v) " after waiting " (A_TickCount - r.queuedAt) " ms"
-            (preempt ? " (REPLACING the page's running job)" : "") (r.warm ? " (warm-up)" : "") "   | pages: " PoolViewsSummary())
-        if r.show
+            (preempt ? " (REPLACING the page's running job)" : "") (r.warm ? " (warm-up)" : "") (r.hold ? " (HELD: prepared, sent at release)" : "")
+            "   | pages: " PoolViewsSummary())
+        if (r.show && !r.hold)
             PoolShowChat(v, r.label, r.HasOwnProp("quiet") && r.quiet)   ; you watch Copilot write the answer
     } catch as err {
         v.jobId := "", v.reqId := ""
@@ -1503,8 +1521,10 @@ PoolHandle(text) {
     switch m.Get("t", "") {
         case "ask":
             PoolAsk(PoolNewRequest(m, IsInteger(hwnd) ? hwnd : 0))
-        case "cancel":
-            PoolCancel(m.Get("id", ""))
+        case "release":                              ; {id, prompt}: a held request goes now
+            PoolRelease(m.Get("id", ""), m.Get("prompt", ""))
+        case "cancel":                               ; {id, restore}: restore 0 = a held one replaced by a new one
+            PoolCancel(m.Get("id", ""), m.Get("restore", 1) ? true : false)
         case "tab":                                  ; a browser tab an app drives (copilot-pool-browser.ahk)
             PoolTabHandle(m, IsInteger(hwnd) ? hwnd : 0)
         case "end":
@@ -1525,12 +1545,38 @@ PoolHandle(text) {
     }
 }
 
-PoolCancel(id) {
+; A held request (prepared ahead: new chat + images in the box) gets its prompt and goes at once. Still
+; waiting for its page: it simply runs as a normal request when the page is free.
+PoolRelease(id, prompt) {
+    if (!reqs.Has(id) || !(prompt is String) || Trim(prompt, " `t`r`n") = "")
+        return
+    r := reqs[id]
+    if (!r.hold || r.released)
+        return
+    r.prompt := prompt, r.released := true
+    v := r.view
+    if (IsObject(v) && !v.dead && v.jobId != "" && v.reqId = id) {
+        r.startedAt := A_TickCount                   ; the page's safety-net clock starts now (it may have held a while)
+        DbgTrace("pool", "request " r.logName " RELEASED: prompt " StrLen(prompt) " chars -> " PoolViewName(v) " (" v.state ")")
+        PoolSendGo(v, r)
+        if r.show
+            PoolShowChat(v, r.label, r.HasOwnProp("quiet") && r.quiet)
+    } else {
+        r.hold := false                              ; not on a page yet: it runs as a normal request
+        DbgTrace("pool", "request " r.logName " RELEASED before it reached a page - it goes as a normal request")
+    }
+}
+
+PoolSendGo(v, r) {
+    try v.wv.PostWebMessageAsString(Json.Stringify(Map("t", "go", "jobId", v.jobId, "prompt", r.prompt)))
+}
+
+PoolCancel(id, restore := true) {
     if !reqs.Has(id)
         return
     r := reqs[id]
     if (IsObject(r.view) && r.view.jobId != "" && r.view.reqId = id)
-        try r.view.wv.PostWebMessageAsString(Json.Stringify(Map("t", "abort", "jobId", r.view.jobId)))
+        try r.view.wv.PostWebMessageAsString(Json.Stringify(Map("t", "abort", "jobId", r.view.jobId, "restore", restore ? 1 : 0)))
     PoolLog("request " r.logName " cancelled")
     PoolFinish(r, false, r.sent || IsObject(r.view) ? "cancelled" : "unsent", "cancelled")
 }

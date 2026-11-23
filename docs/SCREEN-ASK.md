@@ -53,6 +53,17 @@ screen-ask.ahk (own process)                        copilot-pool.ahk (own proces
   RasterizationScale is 1, so the page shows the screenshot 1:1 and sizes its toolbar per monitor.
 - **Fast:** the overlay and its WebView are made once at the start and kept hidden. The shortcut only
   captures, saves the PNG and tells the page; the window appears once the page has drawn it.
+- **Instant Send (prepared ahead, 2026-11-23):** the trace showed 2.2-8 s between Send and the question
+  being in Copilot (new chat ~0.4 s, two image pastes ~1-1.7 s, upload ~0.5 s, and a failed paste try =
+  6 s). Now the moment a mark is done the page makes the images (`stage`) and Screen ask sends a **held**
+  ask (`hold: 1`): the pool's page opens the new chat and attaches the images while you type, then waits.
+  Send only brings the prompt (`release`) - typed and clicked in ~50 ms. A changed mark = the held ask is
+  cancelled (`restore: 0`) and a new one made; Esc / Copy / a new capture = cancelled, nothing sent, and the
+  window shows the chat it had before again. If the held ask failed meanwhile, Send asks the normal way.
+  The page also tries the attach way that worked last time first. A new ask never waits for the previous
+  answer: it's sent with `preempt`, so an answer still being written is stopped (owner's choice 2026-11-23;
+  it stays in Copilot's history; a question not yet IN Copilot is never dropped). Trace: `PREPARED ahead`, `RELEASED`,
+  page `prepared - waiting for the prompt` / `prompt arrived ... typing and sending`.
 - **Pool images** (generic, any app can use them): `images` in an ask = file paths, which must be in
   `APP_IMAGE_INBOX` (PNG/JPEG, up to `ImageMaxMB`). The pool reads them when the request arrives and gives
   them to the page only when it asks for them (never stored in the page or logs). The page attaches them

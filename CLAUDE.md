@@ -91,6 +91,28 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   headset-on-the-desk, suggested level in the gap + slider. OFF by default, [HeadsetCheck] in live-captions.ini;
   own Settings section "Headset check" (after "Q status", which holds the shared Q detection: live status + IntervalSec, then the Q-login alert) + tray > 3CX Q-login alert > Headset check. Mic failure = reminder shown.
   It stops listening the moment it hears you and plays the sound again (AckOn, on by default) = "got it".
+- **Speaker detection** - who is talking, agent or customer. **OFF by default** (tray > Speaker detection, Settings >
+  Captions & mic; [Speaker] Enabled in live-captions.ini). Live Captions with "Include microphone audio" mixes both voices,
+  so who spoke is judged from two Windows peak meters (mic = agent, communications output = customer; levels only,
+  never audio) timed against caption arrival with a self-learned lag.
+  `app\speaker-detect.ahk` (`Spk*`, generic, no call words): adaptive noise floor per meter ("dB above noise", Calibrate),
+  `SpkJudge()` -> agent | customer | unsure | none, `SpkMicHeard()` (agent talks alone, no captions follow twice = Live
+  Captions isn't hearing the mic -> everything = customer + a hint). Settings in `SPK_DEFAULTS`.
+  `app\speaker-chat.ahk` (`SpkChat*`, the Companion side): `ProcessSnapshot` calls `SpkChatNoteWords()` wherever new words
+  arrive, BEFORE any bubble decision (every chunk judged once, on time - skipping it on a pause put a turn's first words in
+  the previous speaker's bubble and skewed the learned lag), and asks `SpkChatSwitch(activeBubble)` wherever it
+  would start a bubble after a pause (a different speaker starts one too) and `SpkChatTag`/`SpkChatAfterSnapshot` give
+  live bubbles `.Speaker` (agent | customer | unsure; `.SpeakerFixed` = set by hand, right-click "This is me"). Saved calls:
+  `chatSpeakers` parallel to `chatBubbles` (absent in older calls). How a bubble looks: `SpkChatLook` -> side + faded. Prompts: `SpkChatLabeled` -> "Agent: / Customer:" lines (AssistLiveTranscript, helper prompts).
+  Each side learns its own caption lag (PC sound is captioned sooner than the mic); LagMode=fixed uses MicLagMs/OutLagMs.
+  Every tuning value is in Settings (`SPKCHAT_TUNING`: one row per value + its default in `SPK_DEFAULTS`), live.
+  Never on together with the whisper mic captions. Probe: `tools\dev\speaker-probe.ahk`. Next: RichEdit chat box (true
+  right-aligned/faded bubbles), then remove the whisper-stream mic experiment.
+- `app\chat-view.ahk` (`ChatView*`) - the Chat view's box: a RichEdit (msftedit.dll; falls back to the old Edit box).
+  `ChatItems()` in the Companion builds [{text, side, faded, ref}]; `ChatViewRender` draws them as RTF (customer left,
+  agent right, unsure faded) and remembers where each item starts, so clicks/right-clicks use `ChatViewItemAt` (never
+  count characters elsewhere: RichEdit ends a paragraph with ONE char, the Edit used CRLF). Highlighted text:
+  `ChatViewSelText` (markers removed). Font size: `ChatViewSetFontSize` + a render.
 - `app\companion-settings.ahk` (`CSet*`) - the Companion's **Settings window**: ⚙ next to 📍, and tray > Settings...
   Sections on the left, built from one field list (`CSetFields`: a new setting = one entry; types at the top of the
   file). The tray menu keeps all its items too (owner's choice), so both MUST use the same functions: a tick calls the

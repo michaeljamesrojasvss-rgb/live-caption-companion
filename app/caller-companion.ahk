@@ -542,19 +542,23 @@ CallerSimulateRing() {
 
 ; Right-click > Search in Salesforce: searches the text highlighted in Chat
 CallerSearchSelection() {
-    ctrl := chatView ? chatBox : transcript
-    s := Buffer(4, 0)
-    e := Buffer(4, 0)
-    SendMessage(0x00B0, s, e, ctrl.Hwnd)              ; EM_GETSEL
-    a := NumGet(s, 0, "UInt")
-    b := NumGet(e, 0, "UInt")
-    if (b <= a) {
+    if chatView {
+        text := ChatViewSelText(chatBox)                 ; the chat box (RichEdit) knows its own text
+    } else {
+        ctrl := transcript
+        s := Buffer(4, 0)
+        e := Buffer(4, 0)
+        SendMessage(0x00B0, s, e, ctrl.Hwnd)              ; EM_GETSEL
+        a := NumGet(s, 0, "UInt")
+        b := NumGet(e, 0, "UInt")
+        ; Use the control's raw text: .Value turns every CRLF into LF, which shifts
+        ; the selection offsets by one character per line break above it.
+        text := b > a ? SubStr(CallerEditText(ctrl.Hwnd), a + 1, b - a) : ""
+    }
+    if (Trim(text) = "") {
         statusText.Text := "Status: highlight some text first, then right-click > Search in Salesforce"
         return
     }
-    ; Use the control's raw text: .Value turns every CRLF into LF, which shifts
-    ; the selection offsets by one character per line break above it.
-    text := SubStr(CallerEditText(ctrl.Hwnd), a + 1, b - a)
     text := Trim(RegExReplace(RegExReplace(text, "[▌▐░]", " "), "\s+", " "))
     if (text = "")
         return

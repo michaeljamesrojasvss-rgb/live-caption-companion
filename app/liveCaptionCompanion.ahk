@@ -13,6 +13,9 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include q-alert.ahk
 #Include headset-check.ahk         ; headset check when you log back in to Q (off by default)
 #Include livecaption-tools.ahk
+#Include speaker-detect.ahk        ; who is talking: mic vs PC sound levels (no audio kept)
+#Include speaker-chat.ahk          ; agent / customer bubbles + prompt labels (off by default)
+#Include chat-view.ahk             ; the Chat view's box: RichEdit, bubbles left / right
 #Include tutorial.ahk
 #Include copilot-assist.ahk
 #Include history-window.ahk
@@ -191,7 +194,8 @@ btnFontDec := myGui.Add("Button", "x+16 w30", "A−")
 btnFontInc := myGui.Add("Button", "x+4  w30", "A+")
 btnPrev    := myGui.Add("Button", "x+16 w95", "◀ Prev call")
 transcript := myGui.Add("Edit", "xm w640 r14 ReadOnly +0x100 Background1B2431 cF1F5FB")
-chatBox := myGui.Add("Edit", "xp yp wp hp ReadOnly +0x100 Background1B2431 cF1F5FB")
+chatBox := ChatViewCreate(myGui, "xp yp wp hp")   ; RichEdit (plain Edit if that can't load)
+ChatViewSetFontSize(chatBox, fontSize)
 reviewBanner := myGui.Add("Text", "xm w640 h28 +0x200 Background3B3215 cFBBF24 Hidden", "")
 btnLive := myGui.Add("Button", "x+6 w140 h28 Hidden", "Back to live call")
 notesLabel := myGui.Add("Text", "xm w640 h20 c9BA8BA", NOTES_LABEL)
@@ -266,11 +270,7 @@ ChatRButtonDown(wParam, lParam, msg, hwnd) {
         return
     x := lParam & 0xFFFF
     y := (lParam >> 16) & 0xFFFF
-    pt := Buffer(8, 0)
-    NumPut("Int", x, pt, 0)
-    NumPut("Int", y, pt, 4)
-    charPos := SendMessage(0x00D7, 0, pt, chatBox.Hwnd) & 0xFFFF   ; EM_CHARFROMPOS
-    PickBubbleAt(charPos)
+    PickBubbleAt(ChatViewCharFromPos(chatBox, x, y))
     chatCtxMenu.Show()
     return 0    ; suppress — prevents WM_RBUTTONUP and default Edit menu from firing
 }
@@ -315,6 +315,7 @@ CallerInit()
 QAlertInit()
 HsInit()                           ; headset check (after QAlertInit: adds to its tray menu)
 LctInit()
+SpkChatInit()                      ; speaker detection (after LctInit: adds to the chat right-click menu)
 AssistInit()
 NotesResizeInit()
 UpdInit()
@@ -344,7 +345,7 @@ if micAvailable {
     A_TrayMenu.Insert("1&")
     A_TrayMenu.Insert("1&", "Mic device", micDevMenu)
     A_TrayMenu.Insert("1&", "Experimental: Mic captions", ToggleMicCaptions)
-    micEnabled := IniRead(MIC_INI, "Companion", "MicCaptions", "0") = "1"
+    micEnabled := IniRead(MIC_INI, "Companion", "MicCaptions", "0") = "1" && !spkChatOn   ; never both
     if micEnabled {
         A_TrayMenu.Check("Experimental: Mic captions")
         StartMicEngine()
@@ -362,7 +363,7 @@ HandleExit(*) {
         OnMessage(0x0232, WindowMoveEnded, 0)
     }
     ; Each step on its own, so one failing can't skip saving the call
-    for step in [CallerShutdown, QAlertShutdown, HsShutdown, MainHelperShutdown, SaLinkShutdown, AgtLinkShutdown, SvLinkShutdown, PoolLinkShutdown, SaveWindowPos, StopMicEngine, SaveNotes, FinishCurrentCall]
+    for step in [CallerShutdown, QAlertShutdown, HsShutdown, MainHelperShutdown, SaLinkShutdown, AgtLinkShutdown, SvLinkShutdown, PoolLinkShutdown, SpkChatShutdown, SaveWindowPos, StopMicEngine, SaveNotes, FinishCurrentCall]
         ErrRun(step)
     ErrLogShutdown()
 }
@@ -379,8 +380,9 @@ ChangeFontSize(delta) {
 ApplyFontSize() {
     current.SetFont("s" fontSize)
     transcript.SetFont("s" fontSize)
-    chatBox.SetFont("s" fontSize)
+    ChatViewSetFontSize(chatBox, fontSize)
     notesBox.SetFont("s" fontSize)
+    try RenderTranscript()                       ; the chat box draws its own font size
 }
 
 ; ==============================================================================
@@ -575,6 +577,7 @@ ProcessSnapshot(lines) {
         }
         activeBubble := bubble
         lastChatTick := now
+        SpkChatTag(bubble)                       ; speaker detection (does nothing while it is off)
         CapTrace("first captions: " lines.Length " line(s), from line #" bubble[1].No)
         return
     }
@@ -613,10 +616,12 @@ ProcessSnapshot(lines) {
         ; words added at the end are new speech; a rewrite updates the words we already have.
         how := ""
         at := CaptionNewAt(previousLine, cur, &how)
+        if at
+            SpkChatNoteWords()                   ; speaker detection: judge these words now (no-op while off)
 
         if baseline.Has(entry) {                 ; a line from before the call / a removed bubble
             if at {
-                if (!IsObject(activeBubble) || isNewTurn) {
+                if (!IsObject(activeBubble) || isNewTurn || SpkChatSwitch(activeBubble)) {
                     activeBubble := []
                     bubbles.Push(activeBubble)
                 }
@@ -633,8 +638,10 @@ ProcessSnapshot(lines) {
             continue
         }
 
-        if (isNewTurn && at && how != "unaligned" && lines.Length <= snapshotLines.Length && index = sharedCount - 1) {
-            ; After a pause, the same line went on: a new bubble with only the new words
+        if (at && how != "unaligned" && lines.Length <= snapshotLines.Length && index = sharedCount - 1
+            && (isNewTurn || SpkChatSwitch(activeBubble))) {
+            ; After a pause (or now someone else is talking), the same line went on: a new bubble
+            ; with only the new words
             CapSetOwned(entry, owner, SubStr(cur, 1, at - 1))       ; its earlier words may have been polished
             bubble := []
             bubbles.Push(bubble)
@@ -643,7 +650,7 @@ ProcessSnapshot(lines) {
             bubble.Push(tailEntry)
             currentMap[index + 1] := [tailEntry, SubStr(cur, 1, at - 1)]
             activeBubble := bubble
-            CapTrace("after a pause the last line went on (" how ") -> new bubble, line #" tailEntry.No
+            CapTrace((isNewTurn ? "after a pause" : "another speaker:") " the last line went on (" how ") -> new bubble, line #" tailEntry.No
                 " (" CapWords(tailEntry.Text).Length " words)")
         } else {
             currentMap[index + 1] := [entry, CapSetOwned(entry, owner, cur)]
@@ -656,7 +663,8 @@ ProcessSnapshot(lines) {
     firstNewIndex := sharedCount
     Loop lines.Length - firstNewIndex {
         index := firstNewIndex + A_Index - 1
-        if (!IsObject(activeBubble) || (isNewTurn && index = firstNewIndex)) {
+        SpkChatNoteWords()                       ; speaker detection: judge these words now (no-op while off)
+        if (!IsObject(activeBubble) || (index = firstNewIndex && (isNewTurn || SpkChatSwitch(activeBubble)))) {
             activeBubble := []
             bubbles.Push(activeBubble)
         }
@@ -671,6 +679,7 @@ ProcessSnapshot(lines) {
     snapshotLines := lines.Clone()
     snapshotMap := currentMap
     lastChatTick := now
+    SpkChatAfterSnapshot(activeBubble)       ; the bubble that got new words: settle its speaker
 }
 
 FindSuffixPrefixOverlap(previous, cur) {
@@ -1083,6 +1092,7 @@ PersistCurrentCall(fast := false) {
     }
     currentCall["transcriptLines"] := tl
     currentCall["chatBubbles"] := BubbleTexts()
+    try SpkChatPersist(currentCall)          ; "chatSpeakers", only once speakers are known
     SaveHistory(fast)
 }
 
@@ -1125,6 +1135,7 @@ ResetCallView() {
     micPartial := ""
     micPartialAfterBubble := 0
     micUndoStack := []
+    try SpkChatReset()
     ClearPromptState()
     notesBox.Value := ""
     RenderTranscript()
@@ -1665,7 +1676,9 @@ HelperClicked(action, *) {
             . "Treat this as correct: use these exact names, account names and details instead of anything in the transcript that conflicts, because captions can mishear names. "
             . "Actions listed here count as confirmed and already done, so do not suggest or draft them again.`n" notes
 
-    transcriptValue := TranscriptText()
+    transcriptValue := SpkChatPromptTranscript()          ; "Agent: / Customer:" lines when speakers are known
+    if (transcriptValue = "")
+        transcriptValue := TranscriptText()
     callerBlock := CallerAutoBlock(raw)
     if (callerBlock != "" && InStr(raw, "{{transcript}}")) {
         transcriptValue := (transcriptValue = "" ? "" : transcriptValue "`n`n") callerBlock
@@ -2442,7 +2455,13 @@ OpenHelperEditor(*) {
 ; (the Edit control keeps its selection when it loses focus because of +0x100).
 TrackSelection() {
     global selectedText
-    ctrl := chatView ? chatBox : transcript
+    if chatView {                                       ; the chat box knows its own text and markers
+        text := ChatViewSelText(chatBox)
+        if (text != "")
+            selectedText := text
+        return
+    }
+    ctrl := transcript
     sel := Buffer(4, 0)
     sel2 := Buffer(4, 0)
     SendMessage(0x00B0, sel, sel2, ctrl.Hwnd)          ; EM_GETSEL
@@ -2473,7 +2492,7 @@ TranscriptText() {
 
 RenderTranscript() {
     SetEditText(transcript, TranscriptText())
-    SetEditText(chatBox, ChatText())
+    ChatViewRender(chatBox, ChatItems())
 }
 
 ; Updates an Edit control without wiping the user's highlight or scroll position.
@@ -2543,49 +2562,46 @@ BubbleTexts() {
     return out
 }
 
-ChatText() {
-    out := ""
+; What the Chat view shows, as items for chat-view.ahk: [{text, side, faded, ref}].
+; ref says what a click on it picks: {type: "customer", index} = a caption bubble (the n-th
+; of BubbleTexts / the saved chatBubbles - "customer" is the historic name, it may be the
+; agent's with speaker detection) | {type: "agent", micIndex} = an experimental mic bubble.
+ChatItems() {
+    items := []
     texts := IsObject(reviewCall) ? reviewCall["chatBubbles"] : BubbleTexts()
     hasMic := micEnabled && !IsObject(reviewCall) && (micCommitted.Length > 0 || micPartial != "")
 
     if !hasMic {
-        for text in texts
-            out .= (out = "" ? "" : "`r`n`r`n") "▌ " text
-        return out
+        speakers := SpkChatViewedSpeakers()      ; [] = no speakers: every bubble on the left, as before
+        for i, text in texts {
+            look := SpkChatLook(speakers, i)
+            items.Push({text: text, side: look.side, faded: look.faded, ref: {type: "customer", index: i}})
+        }
+        return items
     }
 
-    ; Build a combined timeline of customer + agent + shadow entries
-    ; Shadow is placed at its interleaved position (micPartialAfterBubble)
+    ; Experimental whisper mic captions: customer + agent + shadow entries interleaved.
+    ; The shadow (still being heard) sits at micPartialAfterBubble.
+    agent(n) => ({text: micCommitted[n].text, side: "right", faded: false, ref: {type: "agent", micIndex: n}})
+    shadow() => ({text: micPartial, side: "right", faded: true, ref: ""})
     shadowPos := micPartial != "" ? micPartialAfterBubble : -1
     agentIdx := 1
-
-    ; Agent/shadow entries before any customer bubble
-    while (agentIdx <= micCommitted.Length && micCommitted[agentIdx].afterBubble < 1) {
-        out .= (out = "" ? "" : "`r`n`r`n") MIC_INDENT "▐ " micCommitted[agentIdx].text
-        agentIdx += 1
-    }
+    while (agentIdx <= micCommitted.Length && micCommitted[agentIdx].afterBubble < 1)
+        items.Push(agent(agentIdx++))
     if (shadowPos = 0)
-        out .= (out = "" ? "" : "`r`n`r`n") MIC_INDENT "░ " micPartial
-
+        items.Push(shadow())
     for i, text in texts {
-        out .= (out = "" ? "" : "`r`n`r`n") "▌ " text
-        ; Agent bubbles after this customer bubble
-        while (agentIdx <= micCommitted.Length && micCommitted[agentIdx].afterBubble <= i) {
-            out .= "`r`n`r`n" MIC_INDENT "▐ " micCommitted[agentIdx].text
-            agentIdx += 1
-        }
+        items.Push({text: text, side: "left", faded: false, ref: {type: "customer", index: i}})
+        while (agentIdx <= micCommitted.Length && micCommitted[agentIdx].afterBubble <= i)
+            items.Push(agent(agentIdx++))
         if (shadowPos = i)
-            out .= "`r`n`r`n" MIC_INDENT "░ " micPartial
+            items.Push(shadow())
     }
-    ; Remaining agent bubbles after all customer bubbles
-    while (agentIdx <= micCommitted.Length) {
-        out .= (out = "" ? "" : "`r`n`r`n") MIC_INDENT "▐ " micCommitted[agentIdx].text
-        agentIdx += 1
-    }
+    while (agentIdx <= micCommitted.Length)
+        items.Push(agent(agentIdx++))
     if (shadowPos > texts.Length)
-        out .= (out = "" ? "" : "`r`n`r`n") MIC_INDENT "░ " micPartial
-
-    return out
+        items.Push(shadow())
+    return items
 }
 
 SetView(chat) {
@@ -2898,6 +2914,8 @@ SetMicDevice(index, *) {
 ToggleMicCaptions(*) {
     global micEnabled
     micEnabled := !micEnabled
+    if (micEnabled && spkChatOn)
+        try SpkChatSetOn(false, true)        ; speaker detection already captions your words (via Live Captions)
     if micEnabled {
         A_TrayMenu.Check("Experimental: Mic captions")
         StartMicEngine()
@@ -2977,61 +2995,27 @@ NormalizeSpaces(text) {
 ChatLButtonUp(wParam, lParam, msg, hwnd) {
     if (hwnd != chatBox.Hwnd || !chatView)
         return
-    sel := Buffer(4, 0)
-    sel2 := Buffer(4, 0)
-    SendMessage(0x00B0, sel, sel2, chatBox.Hwnd)         ; EM_GETSEL
-    PickBubbleAt(NumGet(sel, 0, "UInt"))
+    ChatViewGetSel(chatBox, &s, &e)
+    PickBubbleAt(s)
 }
 
+; The bubble at a character position of the Chat view -> pickedBubble (the chat box knows where
+; each item it drew starts and ends)
 PickBubbleAt(pos) {
     global pickedBubble
-    hasMic := micEnabled && !IsObject(reviewCall) && (micCommitted.Length > 0 || micPartial != "")
-
-    if !hasMic {
-        ; Original fast path: only customer bubbles on screen
-        texts := IsObject(reviewCall) ? reviewCall["chatBubbles"] : BubbleTexts()
-        start := 0
-        found := 0
-        Loop texts.Length {
-            if (pos < start)
-                break
-            found := A_Index
-            start += StrLen("▌ " . texts[A_Index]) + 4   ; "▌ " + text + blank line
-        }
-        if (found = 0) {
-            pickedBubble := ""
-            return
-        }
-        if IsObject(reviewCall)
-            pickedBubble := {type: "customer", session: reviewCall, index: found, bubble: ""}
-        else
-            pickedBubble := {type: "customer", session: currentCall, index: found, bubble: VisibleBubbles()[found]}
-        return
-    }
-
-    ; Walk the interleaved chat text to identify what was clicked
-    segments := StrSplit(ChatText(), "`r`n`r`n")
-    offset := 0
-    customerCount := 0
-    agentCount := 0
     pickedBubble := ""
-    for seg in segments {
-        segEnd := offset + StrLen(seg)
-        if (pos >= offset && pos < segEnd) {
-            trimmed := LTrim(seg)
-            if (SubStr(trimmed, 1, 2) = "▌ ") {
-                pickedBubble := {type: "customer", session: currentCall, index: customerCount + 1, bubble: VisibleBubbles()[customerCount + 1]}
-            } else if (SubStr(trimmed, 1, 2) = "▐ ") {
-                pickedBubble := {type: "agent", micIndex: agentCount + 1}
-            }
-            return
-        }
-        trimmed := LTrim(seg)
-        if (SubStr(trimmed, 1, 2) = "▌ ")
-            customerCount += 1
-        else if (SubStr(trimmed, 1, 2) = "▐ ")
-            agentCount += 1
-        offset := segEnd + 4
+    it := ChatViewItemAt(pos)
+    if (!IsObject(it) || !IsObject(it.ref))
+        return
+    r := it.ref
+    if (r.type = "agent") {
+        pickedBubble := {type: "agent", micIndex: r.micIndex}
+    } else if IsObject(reviewCall) {
+        pickedBubble := {type: "customer", session: reviewCall, index: r.index, bubble: ""}
+    } else {
+        vis := VisibleBubbles()
+        if (r.index <= vis.Length)
+            pickedBubble := {type: "customer", session: currentCall, index: r.index, bubble: vis[r.index]}
     }
 }
 
@@ -3166,10 +3150,14 @@ DeleteSelectedBubble() {
             statusText.Text := "Status: the saved call no longer lines up; nothing was deleted"
             return
         }
+        speaker := ""
+        try speaker := SpkChatSavedRemoveAt(reviewCall, p.index)    ; before the bubble goes (they must line up)
         Loop span[2]
             reviewCall["transcriptLines"].RemoveAt(span[1])
         reviewCall["chatBubbles"].RemoveAt(p.index)
-        AddRemovedRecord(reviewCall, NewRemovedRecord(text, lineTexts, p.index - 1, span[1] - 1))
+        rec := NewRemovedRecord(text, lineTexts, p.index - 1, span[1] - 1)
+        try SpkChatNoteRemoved(rec, speaker)
+        AddRemovedRecord(reviewCall, rec)
         SaveHistory()
     }
 
@@ -3215,6 +3203,7 @@ RemoveLiveBubble(bubble) {
     }
 
     rec := NewRemovedRecord(BubbleText(bubble), LiveBubbleLines(bubble), visIdx, lineIdx)
+    try SpkChatNoteRemoved(rec, SpkChatSpeaker(bubble))
 
     ; If the same words are still on the Live Captions window, treat them like the
     ; text that was there before the call: only words that come after them count.
@@ -3257,6 +3246,7 @@ RestoreRemoved(session, rec) {
         nb := []
         for t in lines
             nb.Push(CaptionLine(t))
+        try SpkChatRestoreLive(nb, rec)
         placed := false
         count := 0
         Loop bubbles.Length {
@@ -3290,6 +3280,7 @@ RestoreRemoved(session, rec) {
         } else
             li := tl.Length
         cb.InsertAt(ci + 1, text)
+        try SpkChatSavedInsertAt(session, ci + 1, rec)
         tl.InsertAt(li + 1, lines*)
         RemoveRemovedRecord(session, rec)
         SaveHistory()

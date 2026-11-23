@@ -339,6 +339,10 @@ AssistOnFail(reason) {
 }
 
 AssistLiveTranscript() {
+    labeled := ""
+    try labeled := SpkChatLabeled(BubbleTexts(), BubbleSpeakers())   ; speaker detection: "Agent: / Customer:" lines
+    if (labeled != "")
+        return labeled
     s := ""
     for line in sessionLines
         if (Trim(line.Text) != "")
@@ -381,7 +385,7 @@ AssistBuildFull(helper, transcriptText) {
 AssistBuildFollowUp(fresh) {
     tpl := StrReplace(AssistSetting("FollowUpPrompt"), "\n", "`n")
     if !InStr(tpl, "{{new}}")
-        tpl := "The customer just said:`n{{new}}`n`n" tpl
+        tpl := SpkChatNewLead() "`n{{new}}`n`n" tpl
     return NormalizeNewlines(StrReplace(tpl, "{{new}}", fresh))
 }
 

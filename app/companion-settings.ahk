@@ -190,6 +190,8 @@ CSetFields() {
             , "Close and reopen Windows Live Captions - try it when captions stop coming"]
         , ["Test Live Captions (plays a sample voice)", LctSafe(LctTest)
             , "Plays a short sample voice, so you can see captions arrive in the Companion"]]})
+    for fld in SpkChatFields(6)                  ; speaker detection (speaker-chat.ahk)
+        f.Push(fld)
     f.Push({sec: 6, type: "head", label: "Mic captions (experimental: your own voice)"})
     if micAvailable {
         devs := [MicDeviceLabel(0)]

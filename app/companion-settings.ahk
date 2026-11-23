@@ -83,9 +83,13 @@ CSetFields() {
     f.Push(CSetCallerFlag("AutoNewCall", "Start a new call record when a call rings"
         , "When a call rings, the call on screen is saved to Call history and a fresh one starts by itself"))
     f.Push(CSetCallerFlag("Popup", "Show the caller card near 3CX"
-        , "A small card next to the 3CX window with the caller and Salesforce search buttons"))
+        , "A small card next to the 3CX window with the caller and Salesforce search buttons (not shown when the automatic Salesforce search is on)"))
     f.Push(CSetCallerFlag("FocusOnRing", "Switch to the Companion when a call rings"
         , "Bring the Companion window to the front when a call rings"))
+    f.Push(CSetCallerFlag("AutoSearch", "Open Salesforce search automatically when a call rings"
+        , "Searches the caller's name, then their number (that tab ends up in front). It waits until you are on the virtual desktop with 3CX, so the tabs open in the browser there. Not for a second call while you are on one. The SF # / SF name buttons still work."))
+    f.Push(CSetCallerFlag("AutoSearchRefocus", "   ...then give focus back to the window I was in"
+        , "The browser comes to the front when a tab opens; this puts the window you were using (e.g. 3CX) straight back"))
     ; ---- 2  Q status: ONE Q detector (q-watch.ahk), used by the Q-login alert and the headset check
     f.Push({sec: 2, type: "head", label: "Q detection  (used by the Q-login alert and the headset check)"})
     f.Push({sec: 2, type: "live", get: QAStatusText})

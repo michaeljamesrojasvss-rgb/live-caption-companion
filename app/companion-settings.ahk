@@ -185,7 +185,10 @@ CSetFields() {
 
     ; ---- 4  Captions & mic
     f.Push({sec: 6, type: "head", label: "Windows Live Captions"})
-    f.Push({sec: 6, type: "note", label: "Also in the right-click menu of the chat view."})
+    f.Push({sec: 6, type: "check", key: "Lct.Auto", label: "Start Windows Live Captions by itself", def: 1
+        , tip: "The Companion needs Live Captions: when it isn't running (at start, or it was closed), the Companion opens it for you"
+        , get: LctAutoOn, flip: LctAutoToggle})
+    f.Push({sec: 6, type: "note", label: "Restart and Test are also in the right-click menu of the chat view."})
     f.Push({sec: 6, type: "buttons", items: [["Restart Live Captions", LctSafe(LctRestart)
             , "Close and reopen Windows Live Captions - try it when captions stop coming"]
         , ["Test Live Captions (plays a sample voice)", LctSafe(LctTest)

@@ -395,12 +395,15 @@ ReadCaption() {
         if !IsObject(captionEl) {
             hwnd := WinExist("ahk_exe LiveCaptions.exe")
             if !hwnd {
-                statusText.Text := "Status: looking for Windows Live Captions (Win+Ctrl+L)..."
+                st := LctAutoStart()             ; not running: start it by itself (livecaption-tools.ahk)
+                if (statusText.Text != st)
+                    statusText.Text := st
                 return
             }
             root := UIA.ElementFromHandle(hwnd)
             captionEl := root.FindElement({AutomationId: "CaptionsTextBlock"})
             statusText.Text := "Status: connected to Windows Live Captions"
+            LctAutoConnected(hwnd)
         }
         caption := Trim(captionEl.Name, " `t`r`n")
     } catch {

@@ -52,7 +52,8 @@ ReleaseBuildUi()
 ReleaseBuildZip(ver, includeHelpers) {
     if !PkgIsValidVersion(ver)
         throw Error("'" ver "' isn't a version like 2026.10.30 (add .2 for a second release the same day)")
-    for f in [REPO "\runtime\AutoHotkey32.exe", REPO "\installer\Setup.bat", REPO "\installer\setup.ahk", APP "\" PKG_MAIN_SCRIPT]
+    for f in [REPO "\runtime\AutoHotkey32.exe", REPO "\installer\Setup.bat", REPO "\installer\setup.ahk"
+        , REPO "\installer\Uninstall.bat", REPO "\installer\uninstall.ahk", APP "\" PKG_MAIN_SCRIPT]
         if !FileExist(f)
             throw Error("missing " f)
 
@@ -65,6 +66,8 @@ ReleaseBuildZip(ver, includeHelpers) {
     DirCreate(pkg "\runtime")
     FileCopy(REPO "\installer\Setup.bat", pkg "\Setup.bat")
     FileCopy(REPO "\installer\setup.ahk", pkg "\installer\setup.ahk")
+    FileCopy(REPO "\installer\Uninstall.bat", pkg "\Uninstall.bat")
+    FileCopy(REPO "\installer\uninstall.ahk", pkg "\installer\uninstall.ahk")
     FileCopy(REPO "\runtime\AutoHotkey32.exe", pkg "\runtime\AutoHotkey32.exe")
     try FileCopy(REPO "\runtime\license.txt", pkg "\runtime\license.txt")
     files := ReleaseCopyApp(APP, pkg "\app")

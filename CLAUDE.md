@@ -9,7 +9,7 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   module with its own prefix (`Caller*`, `Assist*`, `Upd*`, `Merge*`, `Pkg*`, `SF_*`, `Lct*` = Windows Live Captions restart/test tools, `Tut*` = guided tutorial).
   `app-paths.ahk` must stay the first `#Include` (sets `DATA_DIR`, `APP_VERSION`).
 - `data\` - the user's history, helpers, settings, logs. Git-ignored. Never ship it, never write app files there.
-- `installer\` - `Setup.bat` + `setup.ahk`. `tools\release.ahk` - builds releases.
+- `installer\` - `Setup.bat` + `setup.ahk`, and `Uninstall.bat` + `uninstall.ahk` (self-contained, no #Include; runs from a temp copy so it can delete the install folder; `/silent` and `/keepdata` for many PCs). A new thing the app puts outside `app\`/`data\` (shortcut, startup entry, registry, new folder in %LOCALAPPDATA%) must also be removed by `uninstall.ahk`. `tools\release.ahk` - builds releases.
 - `app\main-helper.ahk` - extra hotkeys (Salesforce/ServiceChannel from clipboard, etc.). Ships, but OFF by
   default: each person turns it on from the tray, saved in their own `data\live-captions.ini` [MainHelper].
   Runs as its own process (started by `main-helper-host.ahk`). New personal-but-shareable hotkeys go here.

@@ -5,7 +5,7 @@
 | Folder | What it is | Shipped? |
 |---|---|---|
 | `app/` | The companion and everything it includes, plus `updater.ahk`, `version.txt`, `app.ini` | Yes - updates replace it |
-| `installer/` | `Setup.bat` and `setup.ahk` | Yes (Setup.bat goes to the zip's top level) |
+| `installer/` | `Setup.bat` and `setup.ahk`, `Uninstall.bat` and `uninstall.ahk` | Yes (the two .bat files go to the zip's top level) |
 | `runtime/` | `AutoHotkey32.exe` (v2.0.31, the build that works on work PCs) | Yes |
 | `data/` | Your call history, helpers, settings, logs (git-ignored) | Never |
 | `tools/release.ahk` | Builds the zip and `version.json` | No |
@@ -81,6 +81,21 @@ existing files. `CLAUDE.md` tells Claude Code to do exactly this when you ask it
 Send them the latest zip. They extract it (right-click > Extract All), double-click `Setup.bat`, click Install.
 Setup finds an older copy in Downloads/Desktop/Documents and offers to bring over its history and settings.
 Running Setup again repairs or updates an install and keeps their data.
+
+## Uninstalling
+
+Double-click `Uninstall.bat` (top level of the zip; in the repo it is in `installer/`). It asks first, closes the
+companion and its other apps, then removes the install folder, the Desktop / Start menu / Startup shortcuts that
+point into it, the built-in browser sign-in and screenshot folders in `%LOCALAPPDATA%\CaptionCompanion`, and the temp
+files. A tick box decides whether call history, helpers and settings (`data\`) go too; unticked keeps `data\`, and a
+later Setup picks it up again.
+
+- **Many PCs:** copy just `Uninstall.bat` + `uninstall.ahk` (same folder) to each PC and run `Uninstall.bat /silent`
+  (no windows, deletes everything including `data\`) or `Uninstall.bat /silent /keepdata`. It uses the AutoHotkey
+  that the install already has. Result: `%TEMP%\CaptionCompanion-uninstall.log`; exit code 0 = done, 1 = something was left.
+- It finds the install in `%LOCALAPPDATA%\CaptionCompanion` or `%USERPROFILE%\CaptionCompanion`, or from where the
+  shortcuts point (a folder picked in Setup). It never touches a folder that has a `.git` in it (your repo).
+- Only the current Windows user's copy is removed (there is nothing machine-wide to remove).
 
 ## Testing the link on one PC
 

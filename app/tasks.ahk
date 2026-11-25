@@ -153,6 +153,7 @@ TaskBuildTray()
 TaskApplyHotkey()
 OnMessage(0x4A, TaskOnCopyData)          ; WM_COPYDATA from other apps / another copy
 OnMessage(0x0201, TaskSplitterDown)      ; WM_LBUTTONDOWN on the resize bars
+OnMessage(0x0232, TaskMoveEnded)         ; WM_EXITSIZEMOVE: remember place + size after every drag / resize
 OnMessage(0x0020, TaskSplitterCursor)    ; WM_SETCURSOR: up/down arrow over them
 OnExit(TaskOnExit)
 TaskRebuildTree()
@@ -878,6 +879,15 @@ TaskSaveWindowPos() {
         IniWrite(y, TASK_INI, "Window", "Y")
         IniWrite(w, TASK_INI, "Window", "W")
         IniWrite(h, TASK_INI, "Window", "H")
+    }
+}
+
+; After a drag or resize of the Tasks window: save at once (not only on hide / exit - an update,
+; a restart or a shutdown would lose the size you just set)
+TaskMoveEnded(wParam, lParam, msg, hwnd) {
+    try {
+        if (hwnd = tkGui.Hwnd)
+            SetTimer(TaskSaveWindowPos, -100)
     }
 }
 

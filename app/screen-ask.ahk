@@ -90,6 +90,7 @@ saToastGui := 0
 saProgressText := "" ; the "on its way" note now showing
 saPool := 0          ; the pool's last "state" message (Map)
 saShotSeq := 0       ; each capture's id (messages from the page say which capture they're about)
+saStage := 0         ; prepared ahead while you type: {shot, ver, r} - r is a "hold" request in the pool (see SaPrepare)
 
 SaBuildMain()
 OnMessage(0x4A, SaOnCopyData)
@@ -288,6 +289,7 @@ SaCapture(*) {
         SaToast("Screen ask is still starting - try again in a moment.", 3000)
         return
     }
+    SaDropPrepared()                                ; (anything still prepared from an earlier capture)
     t0 := A_TickCount
     old := SaPm()
     try {
@@ -495,9 +497,16 @@ SaHandlePage(raw) {
                 if mine
                     SaShowOverlay()
             case "cancel":
+                SaDropPrepared()
                 if mine
                     SaDropShot()
                 DbgTrace("screen", "cancelled")
+            case "stage":                          ; a mark is done: its images go into Copilot's box now
+                if mine
+                    SaPrepare(m)
+            case "unstage":                        ; every mark undone
+                if mine
+                    SaDropPrepared()
             case "hide":                           ; Send / Copy: the screen comes back while the page makes the images
                 if mine
                     SaDropShot(false)
@@ -506,10 +515,12 @@ SaHandlePage(raw) {
                 if (t = "pen" || t = "box" || t = "oval")
                     IniWrite(t, SA_INI, "Settings", "Tool")
             case "settings":
+                SaDropPrepared()
                 if mine
                     SaDropShot()
                 SetTimer(SaShowSettings, -100)
             case "copy":
+                SaDropPrepared()
                 if mine
                     SaDropShot(false)
                 SaCopyFromPage(m.Get("b64", ""))
@@ -518,6 +529,7 @@ SaHandlePage(raw) {
                     SaDropShot(false)
                 SaSend(m)
             case "ocr":                            ; Copy text: read from the clean screenshot, then let it go
+                SaDropPrepared()
                 if mine {
                     SaHideOverlay()
                     path := saShot.path
@@ -525,8 +537,10 @@ SaHandlePage(raw) {
                     SaDropShot(false)
                 }
             case "error":
-                if (mine || !m.Has("shot"))
+                if (mine || !m.Has("shot")) {
+                    SaDropPrepared()
                     SaDropShot()
+                }
                 SaLog("page: " m.Get("msg", ""))
                 SaToast("Screen ask: " m.Get("msg", "something went wrong"), 6000)
         }
@@ -539,40 +553,117 @@ SaHandlePage(raw) {
 ; ==============================================================================
 ; Sending: the images go to the pool's image folder, the request to the pool
 ; ==============================================================================
+;
+; Prepared ahead (the "instant" part): as soon as a mark is done the page sends its images ("stage"), and
+; they go to the pool as a HELD request: Copilot opens a new chat and attaches them while you type. Send
+; then only brings the prompt ("release") - typed and sent at once. A changed mark = the held request is
+; cancelled and a new one made; Esc / Copy / a new capture = cancelled (nothing was sent).
 SaSend(m) {
+    global saStage
+    marks := m.Get("marks", 0), screens := m.Get("screens", 1), question := Trim(m.Get("question", ""))
+    if m.Has("staged") {
+        st := saStage
+        if !(IsObject(st) && st.shot = m.Get("shot", 0) && st.ver = m.Get("staged", -1))
+            throw Error("the prepared images were lost - please try again")
+        saStage := 0
+        r := st.r
+        prompt := SaBuildPrompt(question, r.marks, r.crops, r.screens)
+        if (saReqs.Has(r.id) && r.held) {
+            r.held := false, r.prompt := prompt, r.at := A_TickCount
+            DbgTrace("screen", "ask " r.id " RELEASED (prepared " (A_TickCount - r.stagedAt) " ms ago): " StrLen(prompt) " chars")
+            SaLog("ask " r.id ": prepared ahead, released")
+            if (r.inPool && (hwnd := SaPoolWindow()))
+                SaSendTo(hwnd, POOL_TAG, Map("t", "release", "id", r.id, "prompt", prompt))
+            SaProgress()
+            SaFlush()                            ; (not in the pool yet: it goes now as a normal request)
+            return
+        }
+        ; the prepared request ended without sending (e.g. couldn't attach): ask again the normal way
+        DbgTrace("screen", "ask " r.id ": the prepared request had ended - asking the normal way")
+        SaNewAsk(r.files, r.crops, prompt, marks)
+        return
+    }
+    w := SaWriteImages(m.Get("images", []))
+    SaNewAsk(w.files, w.crops, SaBuildPrompt(question, marks, w.crops, screens), marks, w.bytes)
+}
+
+SaNewAsk(files, crops, prompt, marks, bytes := -1) {
     global saSeq
-    imgs := m.Get("images", [])
-    if !(imgs is Array) || !imgs.Length
-        throw Error("no image to send")
     saSeq += 1
     id := "s" A_TickCount "-" saSeq
-    DirCreate(APP_IMAGE_INBOX)
-    files := [], crops := 0, bytes := 0
-    for i, im in imgs {
-        path := APP_IMAGE_INBOX "\screen-ask-" id "-" i ".png"
-        bytes += SaWriteB64(im.Get("b64", ""), path)
-        files.Push(path)
-        if (im.Get("kind", "") = "crop")
-            crops += 1
-    }
-    marks := m.Get("marks", 0), screens := m.Get("screens", 1)
-    prompt := SaBuildPrompt(Trim(m.Get("question", "")), marks, crops, screens)
-    r := {id: id, prompt: prompt, files: files, full: files[1], at: A_TickCount, sent: false, inPool: false, told: false}
+    r := {id: id, prompt: prompt, files: files, full: files[1], at: A_TickCount, sent: false, inPool: false, told: false,
+        held: false, quiet: false}
     saReqs[id] := r
-    DbgTrace("screen", "ask " id ": " marks " mark(s), " files.Length " image(s), " Round(bytes / 1024) " KB, "
+    DbgTrace("screen", "ask " id ": " marks " mark(s), " files.Length " image(s), " (bytes >= 0 ? Round(bytes / 1024) " KB, " : "")
         StrLen(prompt) " chars")
-    SaLog("ask " id ": " marks " mark(s), " files.Length " image(s), " Round(bytes / 1024) " KB")
+    SaLog("ask " id ": " marks " mark(s), " files.Length " image(s)")
     if !SaPoolWindow()
         SaStartPool()
     SaProgress()
     SaFlush()
 }
 
+; The page's images -> files in the pool's image folder
+SaWriteImages(imgs) {
+    static n := 0
+    if !(imgs is Array) || !imgs.Length
+        throw Error("no image to send")
+    n += 1
+    tag := A_TickCount "-" n
+    DirCreate(APP_IMAGE_INBOX)
+    files := [], crops := 0, bytes := 0
+    for i, im in imgs {
+        path := APP_IMAGE_INBOX "\screen-ask-" tag "-" i ".png"
+        bytes += SaWriteB64(im.Get("b64", ""), path)
+        files.Push(path)
+        if (im.Get("kind", "") = "crop")
+            crops += 1
+    }
+    return {files: files, crops: crops, bytes: bytes}
+}
+
+; A mark is done: its images go into Copilot's box now (a held request), so Send is instant
+SaPrepare(m) {
+    global saStage, saSeq
+    SaDropPrepared(false)                        ; (marks changed: a new one replaces it)
+    w := SaWriteImages(m.Get("images", []))
+    saSeq += 1
+    id := "s" A_TickCount "-" saSeq
+    r := {id: id, prompt: "", files: w.files, full: w.files[1], at: A_TickCount, stagedAt: A_TickCount, sent: false,
+        inPool: false, told: false, held: true, quiet: false,
+        marks: m.Get("marks", 0), crops: w.crops, screens: m.Get("screens", 1)}
+    saReqs[id] := r
+    saStage := {shot: m.Get("shot", 0), ver: m.Get("ver", -1), r: r}
+    DbgTrace("screen", "ask " id " PREPARED ahead: " r.marks " mark(s), " w.files.Length " image(s), " Round(w.bytes / 1024) " KB")
+    if !SaPoolWindow()
+        SaStartPool()
+    SaFlush()
+}
+
+; What was prepared isn't wanted (marks changed, Esc, Copy, a new capture): the pool drops it, unsent
+SaDropPrepared(restore := true) {
+    global saStage
+    if !IsObject(saStage)
+        return
+    r := saStage.r
+    saStage := 0
+    if !saReqs.Has(r.id) {
+        for p in r.files
+            try FileDelete(p)
+        return
+    }
+    r.quiet := true
+    DbgTrace("screen", "ask " r.id ": prepared request dropped (not sent)")
+    if (r.inPool && (hwnd := SaPoolWindow()) && SaSendTo(hwnd, POOL_TAG, Map("t", "cancel", "id", r.id, "restore", restore ? 1 : 0)))
+        return                                   ; its "done" finishes it (quietly)
+    SaFinish(r, false, "cancelled", "")
+}
+
 ; While a question is on its way: a note that stays until it's in Copilot, saying what it waits for
 SaProgress() {
     global saProgressText
     for id, r in saReqs {
-        if r.sent
+        if (r.sent || r.held || r.quiet)          ; (prepared ahead: you're still typing - no note)
             continue
         s := IsObject(saPool) ? saPool.Get("state", "") : ""
         why := IsObject(saPool) ? saPool.Get("reason", "") : ""
@@ -608,7 +699,8 @@ SaFlush() {
         if (hwnd := SaPoolWindow()) {
             m := Map("t", "ask", "id", r.id, "hwnd", saMain.Hwnd, "prompt", r.prompt, "label", "Screen ask",
                 "conversation", SaSetting("Conversation"), "newChat", SaNum("NewChat") ? 1 : 0, "orNew", 1,
-                "show", 1, "images", r.files, "tick", A_TickCount)
+                "show", 1, "images", r.files, "tick", A_TickCount, "hold", r.held ? 1 : 0,
+                "preempt", 1)                    ; a new question doesn't wait for the previous answer: it's stopped
             SaSendTo(hwnd, POOL_TAG, Map("t", "reserve", "conversation", SaSetting("Conversation"), "hwnd", saMain.Hwnd))
             if SaSendTo(hwnd, POOL_TAG, m) {
                 r.inPool := true
@@ -658,6 +750,20 @@ SaFinish(r, ok, kind := "", why := "") {
     if saReqs.Has(r.id)
         saReqs.Delete(r.id)
     DbgTrace("screen", "ask " r.id " " (ok ? "answered" : kind " - " why) " after " (A_TickCount - r.at) " ms")
+    if r.quiet {                                 ; a prepared request you didn't send: nothing to tell
+        for p in r.files
+            try FileDelete(p)
+        return
+    }
+    if (kind = "replaced") {                     ; you asked something new while this answer was being written:
+        for p in r.files                         ; it was stopped on purpose (it stays in Copilot's history)
+            try FileDelete(p)
+        return
+    }
+    if (r.held && !ok) {                         ; prepared ahead but it failed before you pressed Send: Send asks
+        SaLog("ask " r.id " (prepared ahead) ended: " kind " - " why)   ; again the normal way (SaSend), so keep its files
+        return
+    }
     if !ok {
         SaLog("ask " r.id " not answered: " kind " - " why)
         copied := SaClipImage(r.full)

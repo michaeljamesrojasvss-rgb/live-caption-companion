@@ -313,7 +313,7 @@ AutoNewText(old, now) {
 }
 
 AutoFollowUp(fresh, notes, notesChanged) {
-    part := fresh != "" ? "The customer just said:`n" fresh : "(Nothing new from the customer.)"
+    part := fresh != "" ? SpkChatNewLead() "`n" fresh : "(Nothing new from the customer.)"
     if (notesChanged && notes != "")
         part .= "`n`nUPDATED AGENT-VERIFIED INFORMATION (treat as correct; actions listed are already done):`n" notes
     tpl := StrReplace(AutoSetting("FollowUpPrompt"), "\n", "`n")

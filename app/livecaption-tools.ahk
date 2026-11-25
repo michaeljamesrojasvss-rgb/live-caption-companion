@@ -23,6 +23,18 @@ LCT_LOG := DATA_DIR "\livecaption-tools.log"
 LCT_EXE := "LiveCaptions.exe"
 LCT_DEFAULT_TEXT := "Testing the windows live caption"
 
+; Auto-start: the Companion needs Live Captions, so when its window is missing (Companion start, closed,
+; crashed) it is started by itself - [LiveCaptions] AutoStart in live-captions.ini (Settings > Captions &
+; mic, and the tray). Never while "Restart" is closing it, never twice while it is still opening; 20 s
+; between tries, once a minute after 3 failed ones. The window you were in gets the focus back.
+LCT_INI := DATA_DIR "\live-captions.ini"
+LCT_AUTO_TRAY := "Start Windows Live Captions by itself"
+lctRestarting := false    ; Restart is closing it: auto-start waits
+lctAutoLast := 0          ; when auto-start last ran it
+lctAutoTries := 0         ; tries since it was last connected
+lctAutoPrev := 0          ; the window that was active when it was started (gets the focus back)
+lctMissing := false       ; LiveCaptions.exe isn't on this PC
+
 lctVoice := ""            ; kept alive while speaking - releasing it cuts the speech off
 lctTestStartChanges := 0  ; changeCount when the test started
 lctTestStartCaption := ""
@@ -34,7 +46,9 @@ LctInit() {
         chatCtxMenu.Add()
         chatCtxMenu.Add("Restart Windows Live Captions", LctSafe(LctRestart))
         chatCtxMenu.Add("Test Windows Live Captions (play sample voice)", LctSafe(LctTest))
-        LctLog("started")
+        A_TrayMenu.Insert("1&", LCT_AUTO_TRAY, LctSafe(LctAutoToggle))
+        LctAutoSyncTray()
+        LctLog("started (auto-start " (LctAutoOn() ? "on" : "off") ")")
     } catch as err {
         LctLog("start failed: " err.Message)
     }
@@ -44,28 +58,34 @@ LctInit() {
 ; Restart
 ; ------------------------------------------------------------------------------
 LctRestart() {
-    global captionEl
+    global captionEl, lctRestarting
     statusText.Text := "Status: restarting Windows Live Captions..."
     captionEl := ""                      ; drop the old connection, ReadCaption reconnects
 
-    ; Repeat until it stays gone: one kill is sometimes not enough
+    ; Repeat until it stays gone: one kill is sometimes not enough. Auto-start must not start it again
+    ; meanwhile (ReadCaption runs during these Sleeps).
     tries := 0
-    while ProcessExist(LCT_EXE) && tries < 6 {
-        tries += 1
-        try ProcessClose(LCT_EXE)
-        Sleep(400)
-        if ProcessExist(LCT_EXE)
-            try RunWait('taskkill.exe /F /IM ' LCT_EXE ' /T', , "Hide")
-        Sleep(300)
+    lctRestarting := true
+    try {
+        while ProcessExist(LCT_EXE) && tries < 6 {
+            tries += 1
+            try ProcessClose(LCT_EXE)
+            Sleep(400)
+            if ProcessExist(LCT_EXE)
+                try RunWait('taskkill.exe /F /IM ' LCT_EXE ' /T', , "Hide")
+            Sleep(300)
+        }
+        if ProcessExist(LCT_EXE) {
+            statusText.Text := "Status: could not close Windows Live Captions - end it in Task Manager"
+            LctLog("restart: still running after " tries " tries")
+            return
+        }
+        LctLog("restart: closed after " tries " kill round(s)")
+        ok := LctStart()
+    } finally {
+        lctRestarting := false
     }
-    if ProcessExist(LCT_EXE) {
-        statusText.Text := "Status: could not close Windows Live Captions - end it in Task Manager"
-        LctLog("restart: still running after " tries " tries")
-        return
-    }
-    LctLog("restart: closed after " tries " kill round(s)")
-
-    if !LctStart() {
+    if !ok {
         statusText.Text := "Status: closed Windows Live Captions - press Win+Ctrl+L to start it"
         return
     }
@@ -100,6 +120,67 @@ LctStart() {
     }
     LctLog("start: no window within 5 s")
     return false
+}
+
+; ------------------------------------------------------------------------------
+; Auto-start (ReadCaption asks while there is no Live Captions window)
+; ------------------------------------------------------------------------------
+LctAutoOn() => IniRead(LCT_INI, "LiveCaptions", "AutoStart", "1") = "1"
+
+LctAutoToggle() {
+    IniWrite(LctAutoOn() ? "0" : "1", LCT_INI, "LiveCaptions", "AutoStart")
+    LctAutoSyncTray()
+    LctLog("auto-start " (LctAutoOn() ? "on" : "off"))
+}
+
+LctAutoSyncTray() {
+    try LctAutoOn() ? A_TrayMenu.Check(LCT_AUTO_TRAY) : A_TrayMenu.Uncheck(LCT_AUTO_TRAY)
+}
+
+; No Live Captions window: starts it (when it may) and returns the status line to show. Never waits.
+LctAutoStart() {
+    global lctAutoLast, lctAutoTries, lctAutoPrev, lctMissing
+    manual := "Status: looking for Windows Live Captions (Win+Ctrl+L)..."
+    try {
+        if (lctRestarting || !LctAutoOn())
+            return manual
+        if lctMissing
+            return "Status: Windows Live Captions isn't on this PC (it needs Windows 11 22H2 or newer)"
+        if ProcessExist(LCT_EXE)                       ; opening (no window yet): don't start a second one
+            return "Status: Windows Live Captions is starting..."
+        pause := lctAutoTries >= 3 ? 60000 : 20000
+        if (lctAutoLast && A_TickCount - lctAutoLast < pause)
+            return lctAutoTries >= 3 ? "Status: couldn't start Windows Live Captions by itself - press Win+Ctrl+L"
+                : "Status: starting Windows Live Captions..."
+        path := LctExePath()
+        if !FileExist(path) {
+            lctMissing := true
+            LctLog("auto-start: " LCT_EXE " not found on this PC")
+            return LctAutoStart()
+        }
+        lctAutoLast := A_TickCount
+        lctAutoTries += 1
+        lctAutoPrev := WinExist("A")
+        Run(path)
+        LctLog("auto-start: started it (try " lctAutoTries ")")
+        try DbgTrace("captions", "Live Captions wasn't running - started it (try " lctAutoTries ")")
+        return "Status: starting Windows Live Captions..."
+    } catch as err {
+        LctLog("auto-start failed: " err.Message)
+        return manual
+    }
+}
+
+; ReadCaption found the window: if we started it, the window you were in gets the focus back
+LctAutoConnected(hwnd) {
+    global lctAutoTries, lctAutoPrev
+    try {
+        if (lctAutoTries && lctAutoPrev && lctAutoPrev != hwnd && WinExist("ahk_id " lctAutoPrev) && WinActive("ahk_id " hwnd))
+            WinActivate("ahk_id " lctAutoPrev)
+        if lctAutoTries
+            LctLog("auto-start: connected")
+    }
+    lctAutoTries := 0, lctAutoPrev := 0
 }
 
 ; ------------------------------------------------------------------------------

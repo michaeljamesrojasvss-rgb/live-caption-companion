@@ -90,6 +90,10 @@
   let cur = null;           // the mark being drawn
   let tool = "pen";
   let asking = false, sending = false, whole = false;
+  // Prepared ahead ("stage"): as soon as a mark is done, the images are made and sent to the app, which has
+  // Copilot open a new chat and attach them WHILE you type. Send then only brings the question. markVer
+  // counts every change of the marks; stagedVer = the version the app has (-1 = none).
+  let markVer = 0, stagedVer = -1, stageBusy = false, stageAgain = false, stageIdle = null, stageIdleRes = null;
 
   // ---------- monitors ----------
   const monAt = (x, y) => {
@@ -183,6 +187,7 @@
     redraw();
     whole = false;
     showAsk(b, m.mon);
+    marksChanged();
   };
   ink.addEventListener("pointerup", endMark);
   ink.addEventListener("pointercancel", endMark);
@@ -193,8 +198,32 @@
     marks.pop(); redraw();
     if (!marks.length && !whole) hideAsk();
     else if (marks.length) { const m = marks[marks.length - 1]; showAsk(bboxOf(m), m.mon); }
+    marksChanged();
   }
-  function clearMarks() { cur = null; marks = []; redraw(); if (!whole) hideAsk(); }
+  function clearMarks() { cur = null; marks = []; redraw(); if (!whole) hideAsk(); marksChanged(); }
+
+  // ---------- prepared ahead: the images go to Copilot's box while you type ----------
+  function marksChanged() { markVer++; stageNow(); }
+  async function stageNow() {
+    if (stageBusy) { stageAgain = true; return; }           // making images now: once more when done (newest marks)
+    stageBusy = true;
+    stageIdle = new Promise(r => stageIdleRes = r);
+    do {
+      stageAgain = false;
+      const S = shot, ver = markVer, M = marks.slice();
+      if (!S || sending) break;
+      if (!M.length && !whole) { if (stagedVer !== -1) { stagedVer = -1; post({ t: "unstage", shot: S.id }); } continue; }
+      try {
+        const images = await compose(S, M, true);
+        if (S === shot && ver === markVer) {                  // still what's on screen
+          post({ t: "stage", shot: S.id, ver, marks: M.length, screens: S.monitors.length, images });
+          stagedVer = ver;
+        }
+      } catch {}                                              // Send makes them itself then
+    } while (stageAgain);
+    stageBusy = false;
+    stageIdleRes();
+  }
 
   function setTool(t) {
     tool = t;
@@ -222,6 +251,7 @@
     const mon = monAt(shot.cursor.x, shot.cursor.y), sz = sizeOf(ask);
     showAsk({ x: mon.x + (mon.w - sz.w * mon.scale) / 2, y: mon.y + mon.h * 0.35, w: 0, h: 0 }, mon);
     hint.style.display = "none";
+    marksChanged();
   }
 
   // ---------- the images that go to the AI ----------
@@ -293,6 +323,12 @@
     const question = q.value.trim(), S = shot, M = marks.slice(), nMarks = M.length, screens = S.monitors.length;
     post({ t: "hide" });                                     // the screen comes back at once; the images are made meanwhile
     try {
+      if (stageBusy) await stageIdle;                        // the images for these marks are being made right now
+      if (stagedVer === markVer) {                           // already in Copilot's box: only the question goes
+        post({ t: "send", shot: S.id, question, marks: nMarks, screens, staged: stagedVer });
+        if (shot === S) reset();
+        return;
+      }
       const images = await compose(S, M, true);
       post({ t: "send", shot: S.id, question, marks: nMarks, screens, images });
     } catch (e) {
@@ -328,6 +364,7 @@
 
   function reset() {
     shot = null; marks = []; cur = null; sending = false; whole = false;
+    markVer++; stagedVer = -1;                               // (the app drops what was prepared for that capture)
     hideAsk(); q.value = "";
     bar.style.display = "none"; hint.style.display = "none"; busy.style.display = "none";
     $("frames").innerHTML = "";

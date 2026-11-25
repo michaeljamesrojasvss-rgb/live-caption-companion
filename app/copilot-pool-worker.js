@@ -7,7 +7,9 @@
 //
 // AHK puts   window.__lccPool = { id, url, hosts: [...], site: {...}, account, sendWaitMs }   in front of this.
 // To AHK (JSON strings):  hello {resume} | state | account | log | trusted | sent | chunk | result
-// From AHK (JSON strings): job {jobId, prompt, newChat, keep, stream, preempt} | abort {jobId} | trusted-done | ping
+// From AHK (JSON strings): job {jobId, prompt, newChat, keep, stream, preempt, hold} | go {jobId, prompt} | abort {jobId} | trusted-done | ping
+// A job with "hold" is prepared ahead (new chat, images attached) and then WAITS: "go" brings its prompt,
+// which is typed and sent at once (Screen ask: the slow steps happen while you mark and type).
 //
 // Rules: click Send ONCE and wait - Copilot takes 5-7 s to register a Send on a freshly loaded page. Only try
 // another way if the prompt is still in the box. Never send a prompt twice.
@@ -33,6 +35,9 @@
   const SETTLE = site.answer === "settle";
   const SETTLE_MS = site.settleMs || 2500;
   const RESUME_KEY = "__lccPoolResume";
+  const KEEP_CHAT_KEY = "__lccPoolKeepChat";   // a page loaded on purpose to show a chat again: don't reset it
+  const HOLD_MAX_MS = 4 * 60000;               // a held job waits this long for its prompt, then gives up (unsent)
+  const goFor = new Map();                     // jobId -> prompt: "go" may arrive before the job reaches its wait
 
   // ---------- selectors: from the site file ----------
   const SEL_KEYS = ["editor", "question", "message", "messageBusy", "copyButton", "reply", "inputBox", "attachments", "newChat", "answerArea", "stop",
@@ -300,6 +305,7 @@
   let imagesUsed = false;                 // this page has had images attached (then a "clean" page has no chips left)
   let attachPending = false;              // we may have put images in the box that weren't sent (a site may show no chips)
   let imgWait = null;
+  let lastWay = "";                       // the attach way that worked last on this page
   const composer = () => q("inputBox") || (getEditor() && getEditor().closest("form")) || null;
   // file chips in the input box
   function chipCount() {
@@ -389,7 +395,9 @@
     const files = list.map(toFile);
     imagesUsed = true;
     attachPending = true;                 // until Send takes them (a failure leaves the page "not clean": reloaded)
-    const ways = Array.isArray(IMG.how) && IMG.how.length ? IMG.how : ["paste", "drop", "input", "trusted-input"];
+    let ways = Array.isArray(IMG.how) && IMG.how.length ? IMG.how : ["paste", "drop", "input", "trusted-input"];
+    // the way that worked last time goes first (a way that fails costs attachWaitMs, 6 s on Copilot)
+    if (lastWay && ways.includes(lastWay)) ways = [lastWay].concat(ways.filter(w => w !== lastWay));
     const waitMs = IMG.attachWaitMs || 6000;
     let worked = null;
     for (let i = 0; i < files.length; i++) {
@@ -415,6 +423,7 @@
       if (!(await waitUntil(() => !qa("attachBusy").some(shown), upMs))) throw new Error("the images were still uploading after " + upMs / 1000 + " s");
       tr("uploads finished (" + Math.round(performance.now() - t) + " ms)");
     }
+    lastWay = worked || lastWay;
     log("attached " + files.length + " image(s) by " + worked);
   }
 
@@ -584,15 +593,26 @@
     return { text: last, markdown: last };
   }
 
+  // A held job was cancelled before Send after it had left a chat: load that chat again, as it was
+  function backToChat(url) {
+    try { sessionStorage.setItem(KEEP_CHAT_KEY, "1"); } catch {}
+    tr("cancelled before Send - showing the previous chat again");
+    attachPending = false;
+    location.href = url;
+    return true;
+  }
+
   // ---------- one job ----------
   // r = a job carried over from the previous page load: {phase: "new" (not typed yet) | "sent" (in the site), ...}
   async function runJob(m, r) {
-    const job = { id: m.jobId, stream: !!m.stream, scroll: !!m.scroll, aborted: false, sent: false, timeoutMs: m.timeoutMs || 180000 };
+    const job = { id: m.jobId, stream: !!m.stream, scroll: !!m.scroll, aborted: false, sent: false, timeoutMs: m.timeoutMs || 180000,
+      wake: null, backTo: "" };
     const stopIfAborted = () => { if (job.aborted) throw new Error("aborted"); };
     const t0 = performance.now();
     traceJob = job.id; traceT0 = t0;
     tr((r ? "job carried over the page load (" + r.phase + "): " : "job received: ") + (m.prompt || "").length + " chars"
-      + (m.newChat ? ", new chat" : ", follow-up") + (m.keep ? ", keep chat" : "") + (m.preempt ? ", replacing the previous job" : ""));
+      + (m.newChat ? ", new chat" : ", follow-up") + (m.keep ? ", keep chat" : "") + (m.preempt ? ", replacing the previous job" : "")
+      + (m.hold ? ", HELD (prepared now, its prompt comes later)" : ""));
     current = job;
     setState("busy");
     let sentBy = "", how = "", leaving = false;
@@ -610,6 +630,9 @@
       if (m.respectDraft && editorText() !== "") throw new Error("someone is typing in the input box - not replacing their text");
       await stopAnswer();                     // still writing an earlier answer: stop it, this prompt goes now
       stopIfAborted();
+      // held: if it's cancelled before Send, the chat it had is loaded again as it was (its images gone) - you
+      // may still be reading it. A new chat on a hidden page needn't: nobody sees it.
+      if (m.hold && !r && questionCount() > 0 && (!m.newChat || document.visibilityState === "visible")) job.backTo = location.href;
       if (m.newChat && !isClean()) {
         if (!(await resetChat(m))) { leaving = true; return; }   // the page loads again and carries this job on
       }
@@ -624,6 +647,21 @@
         stopIfAborted();
       }
       attachBase = chipCount();
+      if (m.hold) {                           // prepared: now wait for the prompt ("go")
+        const th = performance.now();
+        if (!goFor.has(job.id) && !job.aborted) {
+          tr("prepared - waiting for the prompt");
+          setState("held");
+          await new Promise(res => { job.wake = res; setTimeout(res, HOLD_MAX_MS); });
+          job.wake = null;
+          setState("busy");
+        }
+        stopIfAborted();
+        if (!goFor.has(job.id)) throw new Error("the prompt never came (held " + Math.round(HOLD_MAX_MS / 60000) + " min)");
+        m = Object.assign({}, m, { prompt: goFor.get(job.id), hold: 0 });
+        tr("prompt arrived (" + m.prompt.length + " chars) after holding " + Math.round(performance.now() - th) + " ms - typing and sending");
+        if (nImg && chipCount() < attachBase) throw new Error("the images left the chat box while it waited");
+      }
       const before = questionCount(), msgsBefore = qa("message").length;
       const ti = performance.now();
       try { how = await insertText(editor, m.prompt); }
@@ -643,11 +681,15 @@
     } catch (e) {
       tr((job.aborted ? "job stopped: a newer prompt replaced it / it was cancelled" : "job FAILED: " + ((e && e.message) || String(e)))
         + (job.sent ? " (it had been sent)" : " (it was never sent)"));
-      if (job.aborted) { if (job.sent) await stopAnswer(); }
+      if (job.aborted) {
+        if (job.sent) await stopAnswer();
+        else if (job.backTo && !nextJob) leaving = backToChat(job.backTo);   // the page loads that chat again
+      }
       else send({ t: "result", jobId: job.id, ok: false, sent: !!sentBy, error: (e && e.message) || String(e), ms: Math.round(performance.now() - t0) });
     } finally {
-      if (leaving) { tr("page loading again - the job carries on there"); return; }
+      if (leaving) { tr(job.aborted ? "page loading the previous chat again" : "page loading again - the job carries on there"); return; }
       resumeClear();
+      goFor.delete(job.id);
       current = null;
       tr("job over after " + Math.round(performance.now() - t0) + " ms" + (nextJob ? " - the newer prompt starts now" : m.keep ? " - chat kept" : " - resetting to a new chat"));
       traceJob = "";
@@ -657,7 +699,8 @@
         location.href = homeUrl;
       }
       else if (nextJob) { const n = nextJob; nextJob = null; runJob(n); }   // a newer prompt is waiting: no reset in between
-      else if (m.keep) setState("ready");     // a kept conversation stays as it is
+      else if (m.keep && !(job.aborted && !job.sent && attachPending)) setState("ready");     // a kept conversation stays as it is
+      else if (m.keep) await resetAndReady();  // stopped before Send with images in the box: they're cleared
       else await resetAndReady();
     }
   }
@@ -677,8 +720,18 @@
       }
       else send({ t: "result", jobId: m.jobId, ok: false, sent: false, error: "view busy" });
     }
+    else if (m.t === "go") {                  // the prompt of a held job (taken once only)
+      if (!m.jobId || typeof m.prompt !== "string" || goFor.has(m.jobId)) return;
+      goFor.set(m.jobId, m.prompt);
+      if (current && current.id === m.jobId && current.wake) current.wake();
+    }
     else if (m.t === "abort") {
-      if (current && current.id === m.jobId) current.aborted = true;
+      if (current && current.id === m.jobId) {
+        current.aborted = true;
+        if (m.restore === 0) current.backTo = "";            // replaced by a new prepared one: no need to show the old chat
+        if (current.wake) current.wake();
+        if (imgWait && imgWait.jobId === m.jobId) imgWait.done(null);   // don't sit waiting for images that won't come
+      }
       else if (nextJob && nextJob.jobId === m.jobId) nextJob = null;
     }
     else if (m.t === "trusted-done") { const f = pending.get(m.reqId); if (f) { pending.delete(m.reqId); f(!!m.ok); } }
@@ -712,6 +765,13 @@
       await new Promise(r => window.addEventListener("load", r, { once: true }));
     tr("page load complete - settling 1.5 s");
     await sleep(1500);
+    let keepChat = false;
+    try { keepChat = sessionStorage.getItem(KEEP_CHAT_KEY) === "1"; sessionStorage.removeItem(KEEP_CHAT_KEY); } catch {}
+    if (keepChat && !resumed) {             // loaded to show a chat again (a cancelled held job): leave it as it is
+      tr("page ready - the previous chat is shown again");
+      setState("ready"); reportAccount();
+      return;
+    }
     if (resumed) {                          // a new chat it asked for: this fresh page is it
       reportAccount();
       runJob(Object.assign({}, resumed.m, { newChat: 0, preempt: 0 }), resumed);

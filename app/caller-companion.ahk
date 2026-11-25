@@ -14,6 +14,10 @@
 ;   * Manual paths always work, with or without 3CX:
 ;       ✎ on the caller strip (set the caller by hand; the 📞 button is retired), right-click "Search in Salesforce",
 ;       tray > 3CX caller > Simulate incoming call, and the normal New call button.
+;   * Automatic Salesforce search (setting, off by default): waits until you are on
+;     the 3CX window's virtual desktop, so the tabs open in the browser there, then
+;     hands focus back to the window you were in (which can be 3CX - that only
+;     restores focus, it never clicks).
 ;   * Settings: live-captions.ini, section [Caller] (also in the tray menu).
 ; ==============================================================================
 
@@ -37,7 +41,9 @@ callerCardSfName := ""
 CALLER_LOG := DATA_DIR "\caller-debug.log"
 CALLER_TAG := 0x3CC0
 CALLER_3CX := "3CX ahk_exe 3CXSoftphone.exe ahk_class WinUIDesktopWin32WindowClass"
-CALLER_DEFAULTS := Map("Enabled", 1, "AutoNewCall", 1, "Popup", 1, "FocusOnRing", 1, "LogRaw", 1)
+CALLER_DEFAULTS := Map("Enabled", 1, "AutoNewCall", 1, "Popup", 1, "FocusOnRing", 1, "LogRaw", 1
+    , "AutoSearch", 0, "AutoSearchRefocus", 1)
+callerAutoSearch := ""    ; pending automatic Salesforce search: Map(key, since, here) or ""
 
 ; ==============================================================================
 ; Hooks called from liveCaptionCompanion.ahk (each one is safe to call anytime)
@@ -57,6 +63,7 @@ CallerInit() {
 
 CallerShutdown() {
     try CallerStopWatcher()
+    try SetTimer(CallerAutoSearchTick, 0)
     try CallerHideCard()
 }
 
@@ -208,6 +215,7 @@ CallerBuildMenus() {
     m.Add("New call record when a call rings", CallerSafe(() => CallerToggle("AutoNewCall")))
     m.Add("Caller card near 3CX", CallerSafe(() => CallerToggle("Popup")))
     m.Add("Switch to the Companion when a call rings", CallerSafe(() => CallerToggle("FocusOnRing")))
+    m.Add("Open Salesforce search automatically", CallerSafe(() => CallerToggle("AutoSearch")))
     m.Add()
     m.Add("Simulate incoming call…", CallerSafe(CallerSimulateRing))
     m.Add("Simulate call ended", CallerSafe(CallerOnIdle))
@@ -224,7 +232,8 @@ CallerSyncMenu() {
     items := Map("Detect calls from 3CX", "Enabled"
         , "New call record when a call rings", "AutoNewCall"
         , "Caller card near 3CX", "Popup"
-        , "Switch to the Companion when a call rings", "FocusOnRing")
+        , "Switch to the Companion when a call rings", "FocusOnRing"
+        , "Open Salesforce search automatically", "AutoSearch")
     for item, key in items {
         if CallerFlag(key)
             callerTrayMenu.Check(item)
@@ -311,11 +320,166 @@ CallerOnRing(numberField, nameField, source) {
         try AutoHelpersNewCall()                        ; auto helpers start on this call
     }
     CallerRefresh()
-    if CallerFlag("Popup")
+    autoSearch := CallerFlag("AutoSearch")
+    if (CallerFlag("Popup") && !autoSearch)         ; auto search replaces the card's buttons
         CallerShowCard()
     if (!waiting && CallerFlag("FocusOnRing"))      ; also on simulated rings, to test it
         CallerSwitchToCompanion()
     statusText.Text := "Status: incoming call  " CallerLabel()
+    if (!waiting && autoSearch)                     ; a waiting call never searches: stay on this one
+        CallerQueueAutoSearch()
+}
+
+; ==============================================================================
+; Automatic Salesforce search on ring
+; The browser opens a link in its window on the desktop you are LOOKING AT, so the
+; search waits until you are on the 3CX window's desktop (you switch, or "Switch to
+; the Companion" does). Opens the name first, then the number, so the number tab
+; ends up last and active. Cancelled if the call ends or another call takes over.
+; ==============================================================================
+CallerQueueAutoSearch() {
+    global callerAutoSearch
+    if (!IsObject(callerInfo) || !(callerInfo["nameTerms"].Length || callerInfo["numberTerms"].Length))
+        return
+    callerAutoSearch := Map("key", callerInfo["key"], "since", A_TickCount, "here", 0)
+    SetTimer(CallerAutoSearchTick, 100)
+    CallerLog("auto search queued for " CallerLabel())
+}
+
+CallerCancelAutoSearch(why) {
+    global callerAutoSearch
+    SetTimer(CallerAutoSearchTick, 0)
+    if IsObject(callerAutoSearch)
+        CallerLog("auto search cancelled: " why)
+    callerAutoSearch := ""
+}
+
+CallerAutoSearchTick() {
+    global callerAutoSearch
+    try {
+        p := callerAutoSearch
+        if !IsObject(p)
+            return SetTimer(CallerAutoSearchTick, 0)
+        if (!IsObject(callerInfo) || !(callerInfo["key"] == p["key"])
+            || !(callerPhase = "ringing" || callerPhase = "on call"))
+            return CallerCancelAutoSearch("the call ended or changed before you reached the 3CX desktop")
+        if (A_TickCount - p["since"] > 180000)
+            return CallerCancelAutoSearch("you didn't reach the 3CX desktop within 3 minutes")
+        where := CallerOnCurrentDesktop(CallerWorkWindow())
+        if (where = "on another desktop") {
+            p["here"] := 0
+            return
+        }
+        p["here"] += 1
+        if (p["here"] < 2)                  ; one more tick so a desktop switch can finish
+            return
+        SetTimer(CallerAutoSearchTick, 0)
+        callerAutoSearch := ""
+        if (where != "on this desktop")
+            CallerLog("auto search: couldn't tell the desktop, opening anyway")
+        CallerRunAutoSearch()
+    } catch as err {
+        CallerCancelAutoSearch("error")
+        CallerReportError(err, "auto search")
+    }
+}
+
+; The window whose desktop counts as "the work desktop": 3CX (where you answer),
+; or the Companion if 3CX can't be found. 3CX on another desktop is cloaked, so
+; hidden windows are searched too, keeping only one that is really open.
+CallerWorkWindow() {
+    prev := A_DetectHiddenWindows
+    DetectHiddenWindows(true)
+    found := 0
+    try {
+        for hwnd in WinGetList(CALLER_3CX) {
+            if (WinGetStyle(hwnd) & 0x10000000) {      ; WS_VISIBLE
+                found := hwnd
+                break
+            }
+        }
+    }
+    DetectHiddenWindows(prev)
+    return found ? found : myGui.Hwnd
+}
+
+CallerRunAutoSearch() {
+    terms := []
+    for t in callerInfo["nameTerms"]
+        terms.Push(t)
+    for t in callerInfo["numberTerms"]
+        if !SF_ArrayHas(terms, t)
+            terms.Push(t)
+    SetWinDelay(-1)                         ; this thread only: no pause after window commands
+    prev := WinExist("A")
+    browser := CallerBrowserExe()
+    refocus := CallerFlag("AutoSearchRefocus") && prev
+    if (refocus && browser != "") {
+        try {
+            if (WinGetProcessName(prev) = browser)
+                refocus := false            ; you were already in the browser: nothing to give back
+        }
+    }
+    opened := 0
+    for t in terms {
+        if (opened > 0)
+            Sleep(refocus ? 120 : 350)      ; refocus already waited for the browser to take the tab
+        if !SF_OpenSearch(t)
+            continue
+        opened += 1
+        if refocus
+            CallerTakeFocusBack(prev, browser)
+    }
+    statusText.Text := "Status: opened " opened " Salesforce search(es) for " CallerLabel()
+    CallerLog("auto search opened " opened " tab(s)" (refocus ? ", focus given back" : ""))
+}
+
+; Waits for the browser to come forward after a tab was sent to it, then puts
+; `prev` straight back in front. Only reacts to the browser: if you click
+; something else yourself in the meantime, it leaves you alone.
+CallerTakeFocusBack(prev, browser) {
+    SetWinDelay(-1)
+    deadline := A_TickCount + 2000
+    stealer := 0
+    while (A_TickCount < deadline) {
+        act := WinExist("A")
+        if (act && act != prev) {
+            if (browser = "" || CallerProcOf(act) = browser)
+                stealer := act
+            break
+        }
+        Sleep(10)
+    }
+    if !stealer
+        return
+    try WinActivate(prev)
+    ; the browser can grab focus once more while it finishes opening the tab
+    stopAt := A_TickCount + 500
+    while (A_TickCount < stopAt) {
+        if (WinExist("A") = stealer)
+            try WinActivate(prev)
+        Sleep(15)
+    }
+}
+
+CallerProcOf(hwnd) {
+    try return WinGetProcessName(hwnd)
+    return ""
+}
+
+; File name of the default browser (e.g. chrome.exe), or "" if Windows won't say.
+CallerBrowserExe() {
+    try {
+        len := 520
+        buf := Buffer(len * 2, 0)
+        ; ASSOCSTR_EXECUTABLE = 2
+        if (DllCall("Shlwapi\AssocQueryStringW", "UInt", 0, "UInt", 2, "Str", "https", "Str", "open"
+            , "Ptr", buf, "UInt*", &len, "Int") = 0) {
+            SplitPath(StrGet(buf, "UTF-16"), &exe)
+            return exe
+        }
+    }
+    return ""
 }
 
 ; Makes the Companion's main window active where it is. If it is on another virtual
@@ -379,6 +543,7 @@ CallerOnAnswered(contact) {
 
 CallerOnIdle(*) {
     global callerPhase
+    CallerCancelAutoSearch("the call ended")
     if !(callerPhase = "ringing" || callerPhase = "on call")
         return
     callerPhase := "ended"
@@ -542,19 +707,23 @@ CallerSimulateRing() {
 
 ; Right-click > Search in Salesforce: searches the text highlighted in Chat
 CallerSearchSelection() {
-    ctrl := chatView ? chatBox : transcript
-    s := Buffer(4, 0)
-    e := Buffer(4, 0)
-    SendMessage(0x00B0, s, e, ctrl.Hwnd)              ; EM_GETSEL
-    a := NumGet(s, 0, "UInt")
-    b := NumGet(e, 0, "UInt")
-    if (b <= a) {
+    if chatView {
+        text := ChatViewSelText(chatBox)                 ; the chat box (RichEdit) knows its own text
+    } else {
+        ctrl := transcript
+        s := Buffer(4, 0)
+        e := Buffer(4, 0)
+        SendMessage(0x00B0, s, e, ctrl.Hwnd)              ; EM_GETSEL
+        a := NumGet(s, 0, "UInt")
+        b := NumGet(e, 0, "UInt")
+        ; Use the control's raw text: .Value turns every CRLF into LF, which shifts
+        ; the selection offsets by one character per line break above it.
+        text := b > a ? SubStr(CallerEditText(ctrl.Hwnd), a + 1, b - a) : ""
+    }
+    if (Trim(text) = "") {
         statusText.Text := "Status: highlight some text first, then right-click > Search in Salesforce"
         return
     }
-    ; Use the control's raw text: .Value turns every CRLF into LF, which shifts
-    ; the selection offsets by one character per line break above it.
-    text := SubStr(CallerEditText(ctrl.Hwnd), a + 1, b - a)
     text := Trim(RegExReplace(RegExReplace(text, "[▌▐░]", " "), "\s+", " "))
     if (text = "")
         return

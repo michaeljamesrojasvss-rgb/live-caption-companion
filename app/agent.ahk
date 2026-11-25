@@ -84,6 +84,7 @@ agtHotkey := ""
 
 AgtBuildMain()
 OnMessage(0x4A, AgtOnCopyData)
+OnMessage(0x0232, AgtMoveEnded)          ; WM_EXITSIZEMOVE: remember place + size after every drag / resize
 OnExit(AgtOnExit)
 AgtTrimLog()
 try DirCreate(AGT_WORKSPACE)
@@ -271,6 +272,11 @@ AgtWindowShown() {
 }
 
 AgtHide() {
+    AgtSaveWindowPos()
+    agtGui.Hide()                                ; a task carries on; a question for you shows it again
+}
+
+AgtSaveWindowPos() {
     try {
         if (DllCall("IsWindowVisible", "Ptr", agtGui.Hwnd) && WinGetMinMax("ahk_id " agtGui.Hwnd) = 0) {
             agtGui.GetPos(&x, &y)
@@ -281,7 +287,14 @@ AgtHide() {
             IniWrite(h, AGT_INI, "Window", "H")
         }
     }
-    agtGui.Hide()                                ; a task carries on; a question for you shows it again
+}
+
+; After a drag or resize: save at once (not only on hide - a restart would lose the size you set)
+AgtMoveEnded(wParam, lParam, msg, hwnd) {
+    try {
+        if (hwnd = agtGui.Hwnd)
+            SetTimer(AgtSaveWindowPos, -100)
+    }
 }
 
 AgtPointOnScreen(x, y) {

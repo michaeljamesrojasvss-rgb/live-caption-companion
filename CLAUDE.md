@@ -81,12 +81,46 @@ no installers, only the portable 32-bit AutoHotkey in `runtime\`.
   Companion tray > Same value highlighter (`same-value-link.ahk`, `SvLink*`, [SameValue] Enabled; "Show now"
   while off starts it with `/once`). Settings window `same-value-settings.ahk` (`SvSet*`, built from one field
   list - a new setting = one entry + its default in `SV_DEFAULTS`), saved in `data\same-value.ini`. Design: `docs\SAME-VALUE.md`.
+- `app\headset-check.ahk` (`Hs*`) - **Headset check**, part of the Companion, uses the Q alert's watcher (q-watch runs while the Q alert OR this is on: `QAWatcherNeeded`/`QAWatcherSync`): when Q goes
+  off -> on (away >= MinAwaySec) it plays a sound and listens ListenSec through the mic (Windows wave-in, in memory
+  only, never a file; logs = levels/times only). An answer louder than ThresholdDb (its loudest moment by default, MinSoundMs=50) = headset on;
+  else a reminder toast at its own Position (same spot as the Q alert = Q toasts stack past it, `HsToastHeight`) (stays until "I'm wearing them" / "Check again"). Listening starts
+  after the sound ends, so the beep itself never counts. Strict mode (out of Q / a miss): check at log-in, re-check every
+  StrictEverySec (2 min) while the reminder shows; it has only "Check again" until a second miss adds "I'm wearing them".
+  Light mode (sure): next check LightEveryMin (10 min) after the last sign (answer, click, call). Never during a call. Calibrate window: quiet room, 3 answers (softest counts), optional
+  headset-on-the-desk, suggested level in the gap + slider. OFF by default, [HeadsetCheck] in live-captions.ini;
+  own Settings section "Headset check" (after "Q status", which holds the shared Q detection: live status + IntervalSec, then the Q-login alert) + tray > 3CX Q-login alert > Headset check. Mic failure = reminder shown.
+  It stops listening the moment it hears you and plays the sound again (AckOn, on by default) = "got it".
+- **Speaker detection** - who is talking, agent or customer. **OFF by default** (tray > Speaker detection, Settings >
+  Captions & mic; [Speaker] Enabled in live-captions.ini). Live Captions with "Include microphone audio" mixes both voices,
+  so who spoke is judged from two Windows peak meters (mic = agent, communications output = customer; levels only,
+  never audio) timed against caption arrival with a self-learned lag.
+  `app\speaker-detect.ahk` (`Spk*`, generic, no call words): adaptive noise floor per meter ("dB above noise", Calibrate),
+  `SpkJudge()` -> agent | customer | unsure | none, `SpkMicHeard()` (agent talks alone, no captions follow twice = Live
+  Captions isn't hearing the mic -> everything = customer + a hint). Settings in `SPK_DEFAULTS`.
+  `app\speaker-chat.ahk` (`SpkChat*`, the Companion side): `ProcessSnapshot` calls `SpkChatNoteWords()` wherever new words
+  arrive, BEFORE any bubble decision (every chunk judged once, on time - skipping it on a pause put a turn's first words in
+  the previous speaker's bubble and skewed the learned lag), and asks `SpkChatSwitch(activeBubble)` wherever it
+  would start a bubble after a pause (a different speaker starts one too) and `SpkChatTag`/`SpkChatAfterSnapshot` give
+  live bubbles `.Speaker` (agent | customer | unsure; `.SpeakerFixed` = set by hand, right-click "This is me"). Saved calls:
+  `chatSpeakers` parallel to `chatBubbles` (absent in older calls). How a bubble looks: `SpkChatLook` -> side + faded. Prompts: `SpkChatLabeled` -> "Agent: / Customer:" lines (AssistLiveTranscript, helper prompts).
+  Each side learns its own caption lag (PC sound is captioned sooner than the mic); LagMode=fixed uses MicLagMs/OutLagMs.
+  Every tuning value is in Settings (`SPKCHAT_TUNING`: one row per value + its default in `SPK_DEFAULTS`), live.
+  Never on together with the whisper mic captions. Probe: `tools\dev\speaker-probe.ahk`. Next: RichEdit chat box (true
+  right-aligned/faded bubbles), then remove the whisper-stream mic experiment.
+- `app\chat-view.ahk` (`ChatView*`) - the Chat view's box: a RichEdit (msftedit.dll; falls back to the old Edit box).
+  `ChatItems()` in the Companion builds [{text, side, faded, ref}]; `ChatViewRender` draws them as RTF (customer left,
+  agent right, unsure faded) and remembers where each item starts, so clicks/right-clicks use `ChatViewItemAt` (never
+  count characters elsewhere: RichEdit ends a paragraph with ONE char, the Edit used CRLF). Highlighted text:
+  `ChatViewSelText` (markers removed). Font size: `ChatViewSetFontSize` + a render.
 - `app\companion-settings.ahk` (`CSet*`) - the Companion's **Settings window**: ⚙ next to 📍, and tray > Settings...
   Sections on the left, built from one field list (`CSetFields`: a new setting = one entry; types at the top of the
   file). The tray menu keeps all its items too (owner's choice), so both MUST use the same functions: a tick calls the
   module's own toggle (`CallerToggle`, `PoolLinkToggle`, ...) so tray ticks follow; values use the module's setter.
   Save applies only fields changed in the window (a tray change made meanwhile is kept). A new Companion setting goes
   in both places: its module's tray item + one `CSetFields` entry. Other apps keep their own settings windows.
+  The rows sit on a scrolling page (a child Gui `cSetPage`, WS_VSCROLL + wheel, `CSetScroll*`): a section taller than the page
+  scrolls instead of being drawn over the Save / Close bar. Rows are added to the page, not to `cSetGui`.
 - `app\tooltips.ahk` (`Tip*`) - **hover tips**, shared by every app (include it after `app-paths.ahk`): `TipSet(ctl, text)`
   ("" removes; call again to change, e.g. a state), `TipAdd(ctl, text)` returns ctl for one-liners
   (`TipAdd(g.Add(...), "tip").OnEvent(...)` - keep it on ONE line, a line starting with `.OnEvent` is not chaining).

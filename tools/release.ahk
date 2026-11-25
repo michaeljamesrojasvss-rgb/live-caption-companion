@@ -71,6 +71,12 @@ ReleaseBuildZip(ver, includeHelpers) {
     FileCopy(REPO "\runtime\AutoHotkey32.exe", pkg "\runtime\AutoHotkey32.exe")
     try FileCopy(REPO "\runtime\license.txt", pkg "\runtime\license.txt")
     files := ReleaseCopyApp(APP, pkg "\app")
+    ; The uninstaller also rides inside app\ - updates only replace app\, so this is how installed
+    ; copies get it (uninstall-link.ahk copies it out to <root> on start)
+    DirCreate(pkg "\app\uninstall")
+    FileCopy(REPO "\installer\Uninstall.bat", pkg "\app\uninstall\Uninstall.bat")
+    FileCopy(REPO "\installer\uninstall.ahk", pkg "\app\uninstall\uninstall.ahk")
+    files += 2
 
     note := ""
     if includeHelpers {

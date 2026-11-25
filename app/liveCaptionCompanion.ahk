@@ -21,6 +21,7 @@ try DllCall("shell32\SetCurrentProcessExplicitAppUserModelID", "WStr", "CaptionC
 #Include history-window.ahk
 #Include notes-resize.ahk
 #Include updates.ahk
+#Include uninstall-link.ahk     ; installed copies: copies the uninstaller out of app\uninstall, tray > Updates > Uninstall...
 #Include import-merge.ahk
 #Include main-helper-host.ahk
 #Include screen-ask-link.ahk       ; Screen ask (own app, off by default): tray > Screen ask
@@ -319,6 +320,7 @@ SpkChatInit()                      ; speaker detection (after LctInit: adds to t
 AssistInit()
 NotesResizeInit()
 UpdInit()
+UninstInit()                       ; after UpdInit: its menu item goes in the Updates menu
 MergeInit()
 MainHelperInit()
 SaLinkInit()                       ; after MainHelperInit: its tray menu goes right below

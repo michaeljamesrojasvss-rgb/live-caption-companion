@@ -137,6 +137,8 @@ UpdBuildMenu() {
     m.Add()
     m.Add("Open data folder", UpdSafe(() => Run('explorer.exe "' DATA_DIR '"')))
     m.Add("Open update log", UpdSafe(() => Run('notepad.exe "' UPD_LOG '"')))
+    m.Add()
+    m.Add("Uninstall…", UpdSafe(UninstRun))
     updTrayMenu := m
     A_TrayMenu.Insert("1&")
     A_TrayMenu.Insert("1&", "Updates", m)
